@@ -779,30 +779,7 @@
          "draworder":"topdown",
          "id":15,
          "name":"npcs",
-         "objects":[
-                {
-                 "height":0,
-                 "id":67,
-                 "name":"oracle",
-                 "point":true,
-                 "properties":[
-                        {
-                         "name":"npc",
-                         "type":"string",
-                         "value":"oracle"
-                        }, 
-                        {
-                         "name":"rarity",
-                         "type":"string",
-                         "value":"common"
-                        }],
-                 "rotation":0,
-                 "type":"npc",
-                 "visible":true,
-                 "width":0,
-                 "x":12900,
-                 "y":30700
-                }],
+         "objects":[],
          "opacity":1,
          "type":"objectgroup",
          "visible":true,
