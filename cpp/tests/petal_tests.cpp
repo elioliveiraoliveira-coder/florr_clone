@@ -48,6 +48,8 @@ const char* const kPetalsJson = R"JSON({
   "stinky":   {"name":"Stinky","damage":0,"health":1,"size":1,"cooldown":2000,"count":1,"playerModifiers":{"aggroRange":0.75},"color":"#8B4513"},
   "glowy":    {"name":"Glowy","damage":1,"health":5,"size":1,"cooldown":2000,"count":1,"playerModifiers":{"aggroRadius":150},"color":"#FFFF00"},
   "charm":    {"name":"Charm","damage":1,"health":5,"size":1,"cooldown":2000,"count":1,"playerModifiers":{"evasion":0.1},"color":"#FFF824"},
+  "briny":    {"name":"Briny","damage":1,"health":5,"size":1,"cooldown":2000,"count":1,"playerModifiers":{"damageReflection":0.25},"color":"#FFFFFF"},
+  "brinier":  {"name":"Brinier","damage":1,"health":5,"size":1,"cooldown":2000,"count":1,"playerModifiers":{"damageReflection":0.4},"color":"#FFFFFF"},
   "summoner": {"name":"Summoner","damage":1,"health":4,"size":1,"cooldown":1000,"count":1,"petMobType":"critter","petMobRarity":"common","petCount":2,"color":"#AA00AA"},
   "toxic":    {"name":"Toxic","damage":2,"health":5,"size":1,"cooldown":1000,"count":1,"poison":0.05,"poisonDuration":3000,"color":"#00AA00"},
   "blade":    {"name":"Blade","damage":0,"health":null,"size":4,"cooldown":1,"count":0,"range":0,"bodyDamage":10,"equipFlags":"Cutter","noPhysics":true,"color":"#111111"},
@@ -1577,6 +1579,44 @@ TEST(a_sponge_defers_damage_only_while_its_body_is_alive) {
     rig.tick();
     CHECK(rig.slot(0).broken);
     CHECK_NEAR(rig.modifiers().spongeDamageDurationMillis, 0.0, 1e-12);
+}
+
+TEST(salt_reflects_only_while_out_and_a_second_one_never_adds) {
+    if (!contentLoaded()) return;
+    Rig rig;
+    rig.equip(0, "briny");
+
+    // Equipped but still serving the equip reload: gardn only reflects for a
+    // salt that has actually spawned.
+    rig.tick();
+    CHECK(rig.slot(0).broken);
+    CHECK_NEAR(rig.modifiers().damageReflection, 0.0, 1e-12);
+
+    rig.settleEquips();
+    CHECK_NEAR(rig.modifiers().damageReflection, 0.25, 1e-12);
+    CHECK(rig.modifiers().damageReflectionRarity == Rarity::Common);
+
+    // "Does not stack with itself": the better salt wins, the two never sum.
+    rig.equip(1, "brinier");
+    rig.settleEquips();
+    CHECK_NEAR(rig.modifiers().damageReflection, 0.4, 1e-12);
+
+    // Better means against the same attacker, so the tier counts: a rare
+    // briny repays nine times its 0.25 from a common mob, which beats 0.4.
+    rig.equip(1, "briny", Rarity::Rare);
+    rig.settleEquips();
+    CHECK_NEAR(rig.modifiers().damageReflection, 0.25, 1e-12);
+    CHECK(rig.modifiers().damageReflectionRarity == Rarity::Rare);
+
+    rig.unequip(1);
+    rig.damage(rig.petals(0).front(), 5.0);
+    rig.tick();
+    CHECK(rig.slot(0).broken);
+    CHECK_NEAR(rig.modifiers().damageReflection, 0.0, 1e-12);
+
+    CHECK(rig.tickUntil([&] { return !rig.slot(0).broken; }));
+    CHECK_NEAR(rig.modifiers().damageReflection, 0.25, 1e-12);
+    CHECK(rig.modifiers().damageReflectionRarity == Rarity::Common);
 }
 
 TEST(a_yucca_heals_only_while_the_flower_is_blocking) {

@@ -168,6 +168,7 @@ constexpr GardnIcon kGardnIcon[] = {
     {"rice",               25,   13,  0,     0.7,     1},
     {"rock",             29.5,   12,  0,       0, 0.986},   // art fills 99% of its box
     {"rose",               23,   10,  0,       0,     1},
+    {"salt",            25.75,   10,  0,       0,  0.99},   // art fills 99% of its box
     {"sand",               17,    7, 10,       0, 0.852},   // art fills 85% of its box
     {"shell",              31,   10,  0,       0, 0.973},   // art fills 97% of its box
     {"soil",               24,   10,  0,       0, 0.488},   // art fills 49% of its box

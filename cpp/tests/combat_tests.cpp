@@ -1722,6 +1722,214 @@ TEST(a_dodged_shot_flies_past_without_spending_its_pool) {
     CHECK_NEAR(a.world.get<Health>(shot).current, 2.0, 1e-9);
 }
 
+// ---------------------------------------------------------------------------
+// Salt
+// ---------------------------------------------------------------------------
+
+namespace {
+/// A worn salt. The arena's mobs carry no MobType and so count as common,
+/// which is the salt's own tier by default: the share lands unscaled.
+void wearSalt(Arena& a, Entity player, double share = 0.25, Rarity tier = Rarity::Common) {
+    PlayerModifiers modifiers;
+    modifiers.damageReflection = share;
+    modifiers.damageReflectionRarity = tier;
+    a.world.add<PlayerModifiers>(player, modifiers);
+}
+
+Entity mobOfTier(Arena& a, Vec2 at, Rarity tier) {
+    const Entity mob = a.mob(at, 1e6);
+    MobType type;
+    type.rarity = tier;
+    a.world.add<MobType>(mob, type);
+    return mob;
+}
+} // namespace
+
+TEST(salt_deals_a_share_of_what_a_hit_took_back_to_the_mob_behind_it) {
+    Arena a;
+    const Entity player = a.player({0, 0});
+    const Entity mob = a.mob({100, 0}, 100.0);
+    wearSalt(a, player);
+    // gardn blunts only a contact hit with armour; the repayment is not one.
+    a.world.add<Armor>(mob, Armor{3.0});
+
+    a.combat.applyDamage(a.world, player, mob, 20.0, 1000.0);
+    CHECK_NEAR(a.health(player), 80.0, 1e-9);
+    CHECK_NEAR(a.health(mob), 95.0, 1e-9);
+    // It flashes the mob as gardn's does, and it is the FLOWER's damage: it
+    // goes in the mob's ledger against the flower that wore the salt.
+    CHECK(a.world.get<Health>(mob).flashUntilMillis >= 1000.0 + kHurtFlashMillis);
+    const Bounty& bounty = a.world.get<Bounty>(mob);
+    CHECK_EQ(bounty.contributors.size(), 1u);
+    if (!bounty.contributors.empty()) {
+        CHECK(bounty.contributors.front().player == player);
+        CHECK_NEAR(bounty.contributors.front().damage, 5.0, 1e-9);
+    }
+
+    // What the flower LOST, not the swing: a shell that eats half the blow
+    // halves the repayment too.
+    // Up for this one hit only, so it cannot eat the strike further down.
+    a.world.add<ShieldState>(player, ShieldState{10.0, 1150.0});
+    a.combat.applyDamage(a.world, player, mob, 20.0, 1100.0);
+    CHECK_NEAR(a.health(player), 70.0, 1e-9);
+    CHECK_NEAR(a.health(mob), 92.5, 1e-9);
+
+    // A drip is not a hit, and is not reflected.
+    a.combat.applyDamage(a.world, player, mob, 10.0, 1200.0, DamageKind::Poison);
+    a.combat.applyDamage(a.world, player, mob, 10.0, 1300.0, DamageKind::Periodic);
+    CHECK_NEAR(a.health(player), 50.0, 1e-9);
+    CHECK_NEAR(a.health(mob), 92.5, 1e-9);
+
+    // A lightning strike is a hit, and is.
+    a.combat.applyDamage(a.world, player, mob, 10.0, 1400.0, DamageKind::Lightning);
+    CHECK_NEAR(a.health(player), 40.0, 1e-9);
+    CHECK_NEAR(a.health(mob), 90.0, 1e-9);
+}
+
+TEST(a_flower_without_salt_reflects_nothing) {
+    Arena a;
+    const Entity player = a.player({0, 0});
+    const Entity mob = a.mob({100, 0}, 100.0);
+    a.world.add<PlayerModifiers>(player);
+
+    a.combat.applyDamage(a.world, player, mob, 20.0, 1000.0);
+    CHECK_NEAR(a.health(player), 80.0, 1e-9);
+    CHECK_NEAR(a.health(mob), 100.0, 1e-9);
+}
+
+TEST(salt_repays_a_killing_blow_and_a_repayment_can_kill) {
+    Arena a;
+    const Entity player = a.player({0, 0});
+    const Entity mob = a.mob({100, 0}, 4.0, 10.0);
+    wearSalt(a, player);
+
+    // The flower takes 20 and pays back 5, which is more than the mob has: the
+    // kill is the flower's, and so is the bounty.
+    a.combat.applyDamage(a.world, player, mob, 20.0, 1000.0);
+    CHECK(a.world.has<Dead>(mob));
+    if (a.world.has<Dead>(mob)) CHECK(a.world.get<Dead>(mob).killer == player);
+    CHECK(!a.world.has<Dead>(player));
+
+    // A blow that kills the flower still took something, and is still repaid.
+    const Entity other = a.mob({-100, 0}, 100.0);
+    a.combat.applyDamage(a.world, player, other, 500.0, 1100.0);
+    CHECK(a.world.has<Dead>(player));
+    CHECK_NEAR(a.health(other), 100.0 - 80.0 * 0.25, 1e-9);
+}
+
+TEST(salt_pays_the_actor_behind_a_shot_a_seed_or_a_pet_and_never_a_stray) {
+    Arena a;
+    const Entity player = a.player({0, 0});
+    const Entity mob = a.mob({500, 0}, 100.0);
+
+    const Entity shot = spawnShot(a, {10, 0}, {0, 0}, 20.0, 500.0, mob, NULL_ENTITY);
+    a.world.add<Health>(shot, Health{3.0, 3.0, 0.0, 0.0});
+    CHECK(CombatSystem::reflectionTarget(a.world, shot) == mob);
+
+    const Entity seed = a.world.create();
+    a.world.add<MobRingPetal>(seed, MobRingPetal{mob, 0, 0.0});
+    CHECK(CombatSystem::reflectionTarget(a.world, seed) == mob);
+
+    // A pet's bite is its owner's doing -- gardn's pets carry their flower as
+    // base_entity -- so a duellist's salt answers the duellist.
+    const Entity rival = a.player({300, 0});
+    const Entity pet = a.mob({200, 0}, 50.0);
+    a.world.add<Pet>(pet, Pet{rival});
+    CHECK(CombatSystem::reflectionTarget(a.world, pet) == rival);
+
+    CHECK(CombatSystem::reflectionTarget(a.world, NULL_ENTITY) == NULL_ENTITY);
+    // A shot that outlived its mob has nobody behind it to pay back.
+    a.world.destroy(mob);
+    CHECK(CombatSystem::reflectionTarget(a.world, shot) == NULL_ENTITY);
+
+    wearSalt(a, player);
+    a.combat.applyDamage(a.world, player, shot, 20.0, 1000.0);
+    CHECK_NEAR(a.health(player), 80.0, 1e-9);
+    CHECK_NEAR(a.health(shot), 3.0, 1e-9);
+}
+
+TEST(salt_repays_three_times_over_per_tier_the_attacker_is_below_it) {
+    Arena a;
+    const Entity player = a.player({0, 0});
+    wearSalt(a, player, 1.0, Rarity::Rare);
+
+    // All of it from its own tier, x3 per tier below, a third per tier above.
+    const struct { Rarity tier; double repaid; } kLadder[] = {
+        {Rarity::Common, 90.0},
+        {Rarity::Uncommon, 30.0},
+        {Rarity::Rare, 10.0},
+        {Rarity::Epic, 10.0 / 3.0},
+        {Rarity::Legendary, 10.0 / 9.0},
+    };
+    double now = 1000.0;
+    for (const auto& step : kLadder) {
+        const Entity mob = mobOfTier(a, {100, 0}, step.tier);
+        a.combat.applyDamage(a.world, player, mob, 10.0, now);
+        CHECK_NEAR(1e6 - a.health(mob), step.repaid, 1e-6);
+        now += 100.0;
+    }
+
+    // A shot is measured by the tier it was fired at, which is its mob's.
+    const Entity shooter = mobOfTier(a, {500, 0}, Rarity::Uncommon);
+    const Entity shot = spawnShot(a, {10, 0}, {0, 0}, 10.0, 500.0, shooter, NULL_ENTITY);
+    a.world.get<Projectile>(shot).rarity = Rarity::Uncommon;
+    a.combat.applyDamage(a.world, player, shot, 10.0, now);
+    CHECK_NEAR(1e6 - a.health(shooter), 30.0, 1e-6);
+}
+
+TEST(a_duellists_salt_measures_the_petal_that_hit_it_and_pays_its_flower) {
+    Arena a;
+    const Entity player = a.player({0, 0});
+    const Entity rival = a.player({100, 0});
+    a.world.get<Faction>(player).friendlyFireEnabled = true;
+    a.world.get<Faction>(rival).friendlyFireEnabled = true;
+    wearSalt(a, player, 1.0, Rarity::Rare);
+
+    const Entity petal = a.world.create();
+    a.world.add<PetalTag>(petal);
+    PetalInstance instance;
+    instance.owner = rival;
+    instance.rarity = Rarity::Epic;
+    a.world.add<PetalInstance>(petal, instance);
+
+    // An epic petal is a tier above a rare salt: a third of the 30 it took.
+    a.combat.applyDamage(a.world, player, petal, 30.0, 1000.0);
+    CHECK_NEAR(a.health(player), 70.0, 1e-9);
+    CHECK_NEAR(a.health(rival), 90.0, 1e-9);
+}
+
+TEST(two_salted_duellists_do_not_bounce_one_blow_between_them) {
+    Arena a;
+    const Entity first = a.player({0, 0});
+    const Entity second = a.player({100, 0});
+    a.world.get<Faction>(first).friendlyFireEnabled = true;
+    a.world.get<Faction>(second).friendlyFireEnabled = true;
+    wearSalt(a, first);
+    wearSalt(a, second);
+
+    a.combat.applyDamage(a.world, first, second, 20.0, 1000.0);
+    CHECK_NEAR(a.health(first), 80.0, 1e-9);
+    CHECK_NEAR(a.health(second), 95.0, 1e-9);
+}
+
+TEST(a_mob_leaning_on_a_salted_flower_pays_for_every_bite) {
+    Arena a;
+    const Entity player = a.player({1000, 1000});
+    const Entity mob = a.mob({1000, 1000}, 100.0);
+    a.world.add<ContactDamage>(mob, ContactDamage{10.0, 500.0});
+    wearSalt(a, player);
+
+    a.step(0.0);
+    CHECK_NEAR(a.health(player), 90.0, 1e-9);
+    CHECK_NEAR(a.health(mob), 97.5, 1e-9);
+
+    // The same cadence the flower's post-hit window sets: a bite every other
+    // tick, and a quarter of each back.
+    for (int tick = 1; tick <= 10; ++tick) a.step(tick * net::kTickMillis);
+    CHECK_NEAR(a.health(player), 40.0, 1e-9);
+    CHECK_NEAR(a.health(mob), 100.0 - 60.0 * 0.25, 1e-9);
+}
+
 TEST(a_petal_never_hits_its_own_flower) {
     const Fixture& f = fixture();
     CHECK(f.ok);

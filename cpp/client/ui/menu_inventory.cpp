@@ -338,6 +338,18 @@ std::vector<TooltipLine> petalTooltipLines(std::uint16_t petalIndex, Rarity rari
         lines.push_back(dodge);
     }
 
+    // Salt. What it repays depends on who bit, so the card states the one
+    // fixed point -- an attacker of this card's own tier -- and the
+    // description says how the rest of the ladder runs from there.
+    if (stats.modifiers.damageReflection > 0.0) {
+        TooltipLine reflect{"Reflection: " +
+                                exactNumber(stats.modifiers.damageReflection * 100.0) +
+                                "% vs " + rarityLabel(rarity),
+                            12.0};
+        reflect.alpha = 0.56;
+        lines.push_back(reflect);
+    }
+
     // The magic petals. Every one of these figures moves with rarity and none
     // of them can be read off the ring in play -- a player comparing two orbs
     // has nothing else to go on -- so they belong on the card.

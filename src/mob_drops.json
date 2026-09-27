@@ -388,6 +388,14 @@
         "probability": 0.1,
         "minQuantity": 1,
         "maxQuantity": 1
+      },
+      {
+        "type": "petal",
+        "itemType": "salt",
+        "rarity": "common",
+        "probability": 0.3,
+        "minQuantity": 1,
+        "maxQuantity": 1
       }
     ]
   },
@@ -470,6 +478,14 @@
         "itemType": "sand",
         "rarity": "common",
         "probability": 0.7,
+        "minQuantity": 1,
+        "maxQuantity": 1
+      },
+      {
+        "type": "petal",
+        "itemType": "salt",
+        "rarity": "common",
+        "probability": 0.5,
         "minQuantity": 1,
         "maxQuantity": 1
       }
@@ -953,6 +969,14 @@
         "probability": 0.5,
         "minQuantity": 1,
         "maxQuantity": 1
+      },
+      {
+        "type": "petal",
+        "itemType": "salt",
+        "rarity": "common",
+        "probability": 0.25,
+        "minQuantity": 1,
+        "maxQuantity": 1
       }
     ]
   },
@@ -964,6 +988,14 @@
         "itemType": "powder",
         "rarity": "common",
         "probability": 0.5,
+        "minQuantity": 1,
+        "maxQuantity": 1
+      },
+      {
+        "type": "petal",
+        "itemType": "salt",
+        "rarity": "common",
+        "probability": 0.25,
         "minQuantity": 1,
         "maxQuantity": 1
       }

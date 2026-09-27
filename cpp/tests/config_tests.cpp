@@ -468,6 +468,38 @@ TEST(talisman_evasion_steps_three_percent_a_tier_and_the_fly_dodges_nine_in_ten)
     CHECK_NEAR(r.mobStats(r.mobIndex("bee"), Rarity::Common).evasion, 0.0, 1e-12);
 }
 
+TEST(salt_reflects_all_of_a_same_tier_hit_and_climbs_the_ladder_from_there) {
+    const ContentRegistry& r = shipped().registry;
+    const std::uint16_t salt = r.petalIndex("salt");
+    CHECK(salt != kInvalidIndex);
+    if (salt == kInvalidIndex) return;
+
+    // gardn's Salt body -- 10 health, 10 damage, radius 10, 2.5 s.
+    const PetalConfig& c = r.petal(salt);
+    CHECK_NEAR(c.health, 10.0, 1e-12);
+    CHECK_NEAR(c.damage, 10.0, 1e-12);
+    CHECK_NEAR(c.size, 1.0, 1e-12);
+    CHECK_NEAR(c.cooldownMillis, 2500.0, 1e-12);
+    // All of a hit from its own tier, at every tier: the ladder is applied
+    // against the attacker at the moment of the hit, not baked in here.
+    for (int t = 0; t < kRarityCount; ++t) {
+        CHECK_NEAR(r.petalStats(salt, static_cast<Rarity>(t)).modifiers.damageReflection, 1.0,
+                   1e-12);
+    }
+    // Read as a modifier, not dropped as an unknown key.
+    CHECK(!warned(r, "unknown key 'damageReflection'"));
+    CHECK_NEAR(r.petalStats(r.petalIndex("basic"), Rarity::Apex).modifiers.damageReflection, 0.0,
+               1e-12);
+
+    // x3 per tier the attacker is below the salt, /3 per tier above.
+    CHECK_NEAR(reflectionScale(Rarity::Rare, Rarity::Rare), 1.0, 1e-12);
+    CHECK_NEAR(reflectionScale(Rarity::Rare, Rarity::Uncommon), 3.0, 1e-12);
+    CHECK_NEAR(reflectionScale(Rarity::Rare, Rarity::Common), 9.0, 1e-12);
+    CHECK_NEAR(reflectionScale(Rarity::Rare, Rarity::Epic), 1.0 / 3.0, 1e-12);
+    CHECK_NEAR(reflectionScale(Rarity::Rare, Rarity::Legendary), 1.0 / 9.0, 1e-12);
+    CHECK_NEAR(reflectionScale(Rarity::Apex, Rarity::Common), 19683.0, 1e-9);
+}
+
 TEST(special_petal_geometry_and_timers_follow_rarity_overrides) {
     const ContentRegistry& r = shipped().registry;
     const std::uint16_t web = r.petalIndex("web");

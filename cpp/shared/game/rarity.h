@@ -268,4 +268,12 @@ inline double stallPower(Rarity source, Rarity target) {
     return std::min(1.0, std::pow(3.0, rarityIndex(source) - rarityIndex(target)));
 }
 
+/// What a salt's authored share is multiplied by against an attacker: 1 at
+/// equal rarity, 3x for every tier the attacker is BELOW the salt and a third
+/// for every tier above -- a rare salt repays a common bite 9x over and a
+/// legendary one at a ninth. stallPower's ladder without its ceiling.
+inline double reflectionScale(Rarity salt, Rarity attacker) {
+    return std::pow(3.0, rarityIndex(salt) - rarityIndex(attacker));
+}
+
 } // namespace flix

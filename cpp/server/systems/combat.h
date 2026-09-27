@@ -117,6 +117,11 @@ enum class DamageKind : std::uint8_t {
     /// concerned, which is the whole of bone: its armour is there to blunt
     /// exactly this.
     Recoil = 4,
+    /// The share of a hit a salt deals back to whoever landed it. Flashes like
+    /// the hit it answers, but is no hit of its own: nothing dodges, blunts or
+    /// soaks it, and above all nothing reflects it -- two salted duellists
+    /// would otherwise bounce one blow between them until it rounded to zero.
+    Reflect = 5,
 };
 
 /// Whether this kind is a landed hit rather than a drip. Everything in
@@ -283,6 +288,12 @@ public:
     /// The chance, 0..1, that a direct hit on `victim` misses: a mob's Evasion,
     /// or what a flower's worn talismans add up to.
     static double evasionOf(const World& world, Entity victim);
+
+    /// Who a salt on `victim` pays back for a hit from `source`: gardn's
+    /// `base_entity` -- the mob behind a shot, the flower behind a petal, the
+    /// owner behind a pet. NULL_ENTITY when that is nobody who can be hurt: the
+    /// environment, or a shot whose mob is already gone.
+    static Entity reflectionTarget(const World& world, Entity source);
 
     /// The PLAYER answerable for what `source` does: through Projectile::
     /// creditTo, Pet::owner, PetalInstance::owner and GroundEffect::owner,

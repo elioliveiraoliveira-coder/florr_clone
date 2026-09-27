@@ -554,12 +554,13 @@ PetalModifiers parseModifiers(Ctx& ctx, const Json& owner) {
     mods.petalAttractionRadius = ctx.range(node, "petalAttractionRadius", 0.0, 0.0, kWorldSize);
     mods.poisonArmor           = ctx.range(node, "poisonArmor", 0.0, 0.0, kMaxBaseStat);
     mods.evasion               = ctx.range(node, "evasion", 0.0, 0.0, 1.0);
+    mods.damageReflection      = ctx.range(node, "damageReflection", 0.0, 0.0, 1.0);
 
     for (const std::string& key : node.keys()) {
         static const char* kKnown[] = {
             "maxHealth", "speed", "range", "rotationSpeed", "playerRadius", "damage",
             "aggroRange", "luck", "magnetism", "aggroRadius", "petalAttractionRadius",
-            "poisonArmor", "evasion",
+            "poisonArmor", "evasion", "damageReflection",
         };
         bool known = false;
         for (const char* k : kKnown) known = known || key == k;

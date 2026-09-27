@@ -285,6 +285,12 @@ struct PetalModifiers {
     /// Chance, 0..1, that a direct hit on the holder misses. Grows by the
     /// authored figure every tier -- see petalEvasionScale.
     double evasion = 0.0;
+    /// Fraction, 0..1, of what a direct hit takes off the holder that is dealt
+    /// back to whoever is behind it, when the attacker is the SALT'S OWN
+    /// rarity. Flat across the tiers: what rarity buys is the ladder
+    /// reflectionScale() puts under it at the moment of the hit, since that
+    /// depends on the attacker as much as on the salt.
+    double damageReflection = 0.0;
 
     bool any = false;   ///< set when the JSON carried a playerModifiers block
 };

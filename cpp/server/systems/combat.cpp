@@ -97,6 +97,22 @@ Rarity rarityOf(const World& world, Entity e) {
     return Rarity::Common;
 }
 
+/// The tier of whatever LANDED a hit, which is the tier a salt measures
+/// itself against: the mob or pet that bit, or the shot, petal, field or ring
+/// seed that touched -- each made at a tier of its own, which for a mob's shot
+/// or seed is the mob's. Read off the thing's own component rather than its
+/// Replicated copy, which a body that is never sent does not have.
+Rarity hitRarity(const World& world, Entity source) {
+    if (const MobType* type = world.tryGet<MobType>(source)) return type->rarity;
+    if (const Projectile* shot = world.tryGet<Projectile>(source)) return shot->rarity;
+    if (const PetalInstance* petal = world.tryGet<PetalInstance>(source)) return petal->rarity;
+    if (const GroundEffect* effect = world.tryGet<GroundEffect>(source)) return effect->rarity;
+    if (const MobRingPetal* seed = world.tryGet<MobRingPetal>(source)) {
+        if (const MobType* type = world.tryGet<MobType>(seed->mob)) return type->rarity;
+    }
+    return rarityOf(world, source);
+}
+
 /// Whether a projectile should test against this entity at all. Drops and
 /// ground effects are in the broadphase because they have bodies, not because
 /// they are targets.
@@ -622,7 +638,9 @@ DamageResult CombatSystem::applyDamage(World& world, Entity victim, Entity sourc
     health.current -= applied;
     if (health.current < 0.0) health.current = 0.0;
     bool fatal = health.current <= 0.0;
-    if (isDirectHit(kind)) {
+    // A salt's repayment flashes the attacker as gardn's does, though it is
+    // no hit of its own anywhere else in this function.
+    if (isDirectHit(kind) || kind == DamageKind::Reflect) {
         health.flashUntilMillis = std::max(health.flashUntilMillis, nowMillis + kHurtFlashMillis);
     }
     result.applied = applied;
@@ -670,6 +688,39 @@ DamageResult CombatSystem::applyDamage(World& world, Entity victim, Entity sourc
             if (kind == DamageKind::Lightning) flags |= net::DamageLightning;
             events_->damage(id->value, applied, transform ? transform->position : Vec2{},
                             transform ? transform->realm : Realm::Overworld, flags);
+        }
+    }
+
+    // Salt: a share of what this hit took off the flower goes back to whoever
+    // is behind it, as gardn's `damage_reflection` does. The health bar's
+    // loss, not the swing, so armour, a shell, a cotton and overkill shrink the
+    // repayment exactly as they shrank the hit -- and a killing blow still
+    // took something, so it is still repaid.
+    //
+    // The share is the salt's against its own tier and climbs the tier ladder
+    // from there: three times it for every tier the thing that landed the hit
+    // is below the salt, a third for every tier above.
+    //
+    // Direct hits only, like everything else a flower wears against hits.
+    // gardn reflects poison as well, but here a drip is thirty slivers a
+    // second and each would be its own number over the mob. A sponge's
+    // deferred repayment is a drip too, so what a sponge holds back is never
+    // reflected.
+    //
+    // Nested, as cotton's soak is. The attacker's row may move under this
+    // call, which every caller already allows for: none of them carries a
+    // pointer into the world across an applyDamage().
+    if (directPlayerHit && applied > 0.0) {
+        const PlayerModifiers* modifiers = world.tryGet<PlayerModifiers>(victim);
+        if (modifiers != nullptr && modifiers->damageReflection > 0.0) {
+            const double share =
+                modifiers->damageReflection *
+                reflectionScale(modifiers->damageReflectionRarity, hitRarity(world, source));
+            const Entity target = reflectionTarget(world, source);
+            if (target != NULL_ENTITY) {
+                applyDamage(world, target, victim, applied * share, nowMillis,
+                            DamageKind::Reflect);
+            }
         }
     }
 
@@ -1071,6 +1122,19 @@ double CombatSystem::evasionOf(const World& world, Entity victim) {
         return modifiers->evasion;
     }
     return 0.0;
+}
+
+Entity CombatSystem::reflectionTarget(const World& world, Entity source) {
+    if (source == NULL_ENTITY || !world.isAlive(source)) return NULL_ENTITY;
+    Entity actor = attributedSource(world, source);
+    // A seed on a mob's own ring is a piece of the mob, as a petal is of its
+    // flower, but no owner link names the mob: ownerOf() never walks it.
+    if (const MobRingPetal* seed = world.tryGet<MobRingPetal>(actor)) actor = seed->mob;
+    if (actor == NULL_ENTITY || !world.isAlive(actor)) return NULL_ENTITY;
+    // attributedSource() stops at the last LIVE link, so a shot that outlived
+    // its mob names the shot itself -- and a shot is not who hit anybody.
+    if (!world.has<MobTag>(actor) && !world.has<PlayerTag>(actor)) return NULL_ENTITY;
+    return actor;
 }
 
 bool CombatSystem::rollDodge(World& world, Entity victim, double nowMillis) {

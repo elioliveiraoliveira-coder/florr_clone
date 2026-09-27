@@ -547,6 +547,13 @@ struct PlayerModifiers {
     /// talismans are independent rolls -- 1 - (1-a)(1-b) -- so a stack of them
     /// closes on a sure dodge without ever reaching one.
     double evasion = 0.0;
+    /// Fraction of each direct hit's health loss dealt back to an attacker of
+    /// `damageReflectionRarity`, and the tier of the salt it came from; combat
+    /// scales it by reflectionScale() for the attacker actually in front of
+    /// it. Several salts use the strongest one -- gardn's "does not stack with
+    /// itself" -- rather than summing toward a flower that cannot be hit.
+    double damageReflection = 0.0;
+    Rarity damageReflectionRarity = Rarity::Common;
     /// What one of root's armour stacks absorbs. Multiple roots use the
     /// strongest one rather than summing, as lotus does one line up: two
     /// roots are one bank of stacks, at the better petal's strength.

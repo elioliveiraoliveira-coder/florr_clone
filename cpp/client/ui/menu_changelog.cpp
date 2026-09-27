@@ -404,7 +404,8 @@ constexpr ChangelogEntry kChangelog[] = {
       "New petal: Oranges",
       "New petal: Grapes",
       "New magic petal: Blueberries",
-      "Fixed peas and grapes only shooting when attacking"
+      "Fixed peas and grapes only shooting when attacking",
+      "New petal: Salt"
     }},
 };
 

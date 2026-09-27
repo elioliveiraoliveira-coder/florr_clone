@@ -1240,6 +1240,21 @@ PetalSystem::Aggregate PetalSystem::recomputeModifiers(World& world,
                 aggregate.modifiers.spongeDamageDurationMillis =
                     std::max(aggregate.modifiers.spongeDamageDurationMillis,
                              stats.spongeDamageDurationMillis);
+                // Salt, held to the sponge's test: gardn only reflects for a
+                // salt that is out on the ring (`already_spawned`). The best
+                // one alone, because gardn's "does not stack with itself" -- a
+                // second salt is a spare, not another share of every hit.
+                //
+                // Best is measured against one attacker for both, which puts
+                // the tier ladder in: a higher-rarity salt repays more from
+                // every mob there is, whatever mob that turns out to be.
+                PlayerModifiers& out = aggregate.modifiers;
+                if (mods.damageReflection * reflectionScale(slot.rarity, Rarity::Common) >
+                    out.damageReflection * reflectionScale(out.damageReflectionRarity,
+                                                           Rarity::Common)) {
+                    out.damageReflection = mods.damageReflection;
+                    out.damageReflectionRarity = slot.rarity;
+                }
             }
         }
     }
