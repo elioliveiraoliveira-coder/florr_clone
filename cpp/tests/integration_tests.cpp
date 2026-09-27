@@ -1304,3 +1304,60 @@ TEST(a_dandelion_sheds_a_seed_through_the_real_server_loop) {
     world.get<Transform>(dandelion).position = at + Vec2{6000.0, 0.0};   // stop feeding it hits
     CHECK(h.stepUntil({&client}, [&] { return shotsInFlight() == 0; }, budget));
 }
+
+TEST(a_loadout_edit_keeps_the_xp_earned_since_the_last_save) {
+    // A kill pays the live body; the account record only catches up on the
+    // 30-second autosave. A number-key petal swap re-applies the account to
+    // the body, and that used to re-seed XP from the record as well: the HUD
+    // showed the new level for a few frames, then fell back to the saved one,
+    // and the next save wrote the rewound figure over the XP for good.
+    Harness h("loadout-keeps-xp");
+    if (!h.ready) { CHECK(false); return; }
+
+    NetClient client;
+    CHECK(connectClient(h, client));
+    client.requestRegister("grinder", "hunter2!");
+    CHECK(h.stepUntil({&client}, [&] { return client.status() == NetClient::Status::LoggedIn; }));
+    client.joinGame(1280, 720);
+    CHECK(h.stepUntil({&client}, [&] { return client.view().self().netId != 0; }));
+
+    World& world = h.server.world();
+    Entity body = NULL_ENTITY;
+    Query<PlayerTag, NetId> people{world};
+    people.each([&](Entity e, PlayerTag&, NetId& id) {
+        if (id.value == client.view().self().netId) body = e;
+    });
+    CHECK(body != NULL_ENTITY);
+    if (body == NULL_ENTITY) return;
+
+    // Earned on the body, the way a kill pays it. The record still says zero.
+    const double earned = xpForNextLevel(1) + xpForNextLevel(2);
+    const int level = levelFromTotalXp(earned).level;
+    CHECK_EQ(level, 3);
+    world.get<PlayerProgress>(body).totalXp = earned;
+    world.get<PlayerProgress>(body).level = level;
+    CHECK(h.stepUntil({&client}, [&] { return client.view().self().totalXp == earned; }));
+
+    // Both edit paths: the number-key swap and a drag onto the bar.
+    client.swapLoadoutSlots(0, kLoadoutActiveSlots);
+    h.step(10, {&client});
+    client.setLoadoutSlot(1, kNoPetal, Rarity::Common);
+    h.step(10, {&client});
+
+    CHECK_NEAR(world.get<PlayerProgress>(body).totalXp, earned, 1e-9);
+    CHECK_EQ(world.get<PlayerProgress>(body).level, level);
+    CHECK_NEAR(client.view().self().totalXp, earned, 1e-9);
+    CHECK_EQ(levelFromTotalXp(client.view().self().totalXp).level, level);
+    // The stats the edit re-derives come off the live level, not the saved one.
+    CHECK(world.get<Health>(body).max > maxHealthForLevel(1));
+
+    // And the XP is still there to be saved when the flower leaves.
+    client.leaveGame();
+    CHECK(h.stepUntil({&client}, [&] { return client.status() == NetClient::Status::LoggedIn; }));
+    const Account* account = h.server.database().findUser("grinder");
+    CHECK(account != nullptr);
+    if (account == nullptr) return;
+    const PlayerRecord* saved = h.server.database().findProgress(account->id);
+    CHECK(saved != nullptr);
+    if (saved != nullptr) CHECK_NEAR(saved->totalXp, earned, 1e-9);
+}

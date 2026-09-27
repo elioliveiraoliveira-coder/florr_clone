@@ -3856,14 +3856,25 @@ void GameServer::applyAccountToEntity(const PlayerRecord& record, Entity entity)
     const Transform* transform = world_.tryGet<Transform>(entity);
     const Realm realm = transform != nullptr ? transform->realm : Realm::Overworld;
     const bool maze = realm == Realm::Maze;
-    const double trackXp = maze ? record.mazeTotalXp : record.totalXp;
     const SkillSet& skills = maze ? record.mazeSkills : record.skills;
-    const LevelProgress progress = levelFromTotalXp(trackXp);
 
+    // XP is seeded from the account ONCE, when the body is built. After that
+    // the body is the authority: kills pay the live component, and the record
+    // only catches up when persistPlayer runs -- every 30 seconds, on death
+    // and on leave. Re-seeding here, which every loadout edit and swap does,
+    // rewound the flower to its last save: a level gained since then was
+    // shown for a few frames and taken back, and the next save wrote the
+    // rewound figure over the XP for good.
+    const bool fresh = !world_.has<PlayerProgress>(entity);
     PlayerProgress& state = world_.ensure<PlayerProgress>(entity);
-    state.totalXp = trackXp;
-    state.level = progress.level;
+    if (fresh) {
+        state.totalXp = maze ? record.mazeTotalXp : record.totalXp;
+        state.level = levelFromTotalXp(state.totalXp).level;
+    }
     state.stars = record.stars;
+    // Copied out: the ensure<>() calls below can move this row to another
+    // archetype and leave `state` pointing at whatever took its slot.
+    const int level = state.level;
 
     // Cosmetic skin bits are account data, and so is the worn custom skin --
     // the body is rebuilt on every respawn, so without this line a player who
@@ -3879,14 +3890,14 @@ void GameServer::applyAccountToEntity(const PlayerRecord& record, Entity entity)
     world_.ensure<PlayerSkillTree>(entity).skills = skills;
 
     Body& body = world_.ensure<Body>(entity);
-    body.radius = playerRadiusForLevel(progress.level);
+    body.radius = playerRadiusForLevel(level);
     body.mass = 1.0;
 
     Health& health = world_.ensure<Health>(entity);
     const double previousFraction = health.max > 0 ? health.current / health.max : 1.0;
     health.max = realm == Realm::Arena
                      ? kArenaMaxHealth
-                     : maxHealthForLevel(progress.level) * skills.statScale(SkillId::PlayerHealth);
+                     : maxHealthForLevel(level) * skills.statScale(SkillId::PlayerHealth);
     // Preserve the FRACTION across a max-health change, so levelling up mid
     // fight neither heals you to full nor leaves you proportionally worse off.
     //
@@ -3900,7 +3911,7 @@ void GameServer::applyAccountToEntity(const PlayerRecord& record, Entity entity)
     // live in spawnPlayer.
     health.current = clamp(health.max * clamp(previousFraction, 0.0, 1.0), 0.0, health.max);
 
-    world_.ensure<ContactDamage>(entity).amount = bodyDamageForLevel(progress.level);
+    world_.ensure<ContactDamage>(entity).amount = bodyDamageForLevel(level);
     world_.get<ContactDamage>(entity).intervalMillis = 0.0;
 
     Loadout& loadout = world_.ensure<Loadout>(entity);
