@@ -309,7 +309,7 @@ const SvgDocument* App::titleBackground(const std::string& backdrop) {
     // `desert` gets the desert without saying anything. Anything unrecognised
     // tiles the garden's, which is what the browser build did too.
     static const std::unordered_map<std::string, std::string> kFiles = {
-        {"default", "land.svg"},  {"land", "land.svg"},     {"garden", "land.svg"},
+        {"default", "land.svg"},     {"garden", "land.svg"},
         {"desert", "desert.svg"},
         {"ocean", "ocean.svg"},   {"hel", "hel.svg"},       {"ant_hell", "ant_hell.svg"},
         {"sewers", "sewers.svg"}, {"jungle", "jungle.svg"}, {"computer", "computer.svg"},
