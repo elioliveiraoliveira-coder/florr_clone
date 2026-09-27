@@ -60,6 +60,34 @@ constexpr double kPickerMargin = 10.0;
 /// The backdrop's petals are drawn at 0.5x to 2x of this.
 constexpr double kTitlePetalPixels = 32.0;
 
+/// The XP gauge between the picker and the loadout bar: flooooio's title
+/// Gauge, 200 by 25 (UITitle.ts). flooooio lays out in a 1300 by 650 frame
+/// that fills the window by max() the way this client's design space does, so
+/// at 1920 by 1080 its frame -- and the gauge -- stands 1080/650 times larger.
+constexpr double kFlooooioScale = 1080.0 / 650.0;
+constexpr double kTitleXpWidth = 200.0 * kFlooooioScale;
+constexpr double kTitleXpHeight = 25.0 * kFlooooioScale;
+/// The gap the gauge keeps from the picker above it and the loadout bar under
+/// it. Where the two leave it too little room -- the classic bar hangs its key
+/// caps above its first row -- it shrinks whole, down to this share of its
+/// size, rather than sitting on either.
+constexpr double kTitleXpClearance = 6.0;
+constexpr double kTitleXpMinScale = 0.5;
+/// The label does not shrink with it past the size the in-game XP bar's level
+/// is written at, which already stands taller than the strip it labels.
+constexpr double kTitleXpMinTextSize = 14.0;
+/// GAUGE_XP_BACKGROUND_COLOR_CODE and xpGaugeSources' fill (Gauge.ts).
+constexpr std::uint32_t kTitleXpTrack = 0x333333u;
+constexpr std::uint32_t kTitleXpFill = 0xE4ED61u;
+/// The fill's thickness and the label's size, as shares of the gauge's
+/// height; the fraction under which the fill fades out instead of shrinking
+/// to a bare dot of rounded cap; and how far the drawn fill closes on the real
+/// one per 60th of a second -- all Gauge.ts's.
+constexpr double kTitleXpFillThickness = 0.8;
+constexpr double kTitleXpTextShare = 0.4;
+constexpr double kTitleXpFadeBelow = 0.05;
+constexpr double kTitleXpEasePerFrame = 0.05;
+
 /// The daily-login card's body; its border is the same colour at 0.7 value.
 constexpr std::uint32_t kStreakPanel = 0x66FFFFu;
 /// How long its star wobbles after a fresh claim.
@@ -122,6 +150,14 @@ void layPickerRow(std::vector<Rect>& out, std::size_t count, double width, doubl
     }
 }
 
+/// How far through its level an XP total is, for the title gauge. Clamped,
+/// unlike the in-game bar: past the level cap the leftover keeps counting, and
+/// here there is no plate for an over-full fill to overhang.
+double levelFraction(const LevelProgress& progress) {
+    return progress.xpForNext > 0 ? clamp(progress.xpIntoLevel / progress.xpForNext, 0.0, 1.0)
+                                  : 0.0;
+}
+
 /// "ant_hell" -> "Ant Hell": the tab label for a biome id, which is a file
 /// stem rather than something anyone wrote to be read.
 std::string titleCaseId(const std::string& id) {
@@ -164,7 +200,21 @@ ui::TextFieldStyle App::nameFieldStyle() {
 }
 
 void App::updateLobby(double dt) {
-    (void)dt;
+    // The XP gauge eases toward the profile rather than jumping to it: in from
+    // empty the first time the screen shows, and on from where it stood when
+    // a game comes back with more. Nothing moves until the profile is here --
+    // every Profile carries the whole loadout, so an empty one is none yet.
+    const Profile& profile = net_.profile();
+    if (!profile.loadout.empty()) {
+        const LevelProgress progress = levelFromTotalXp(profile.totalXp);
+        if (progress.level != titleXpLevel_) {
+            titleXpLevel_ = progress.level;
+            titleXpShown_ = 0.0;
+        }
+        const double ease = 1.0 - std::pow(1.0 - kTitleXpEasePerFrame, dt * 60.0);
+        titleXpShown_ += (levelFraction(progress) - titleXpShown_) * ease;
+    }
+
     if (config_.autoJoin && !config_.autoUsername.empty() &&
         net_.status() != NetClient::Status::Playing) {
         startGame();
@@ -533,15 +583,29 @@ App::LobbyLayout App::lobbyLayout(int viewWidth, int viewHeight) const {
     if (singleRow) {
         layPickerRow(layout.tabs, tabs.size(), pickerButtonWidth(tabs.size(), rowSpace), centreX,
                      centreY - 20.0, kPickerSingleRowHeight);
-        return layout;
+    } else {
+        layPickerRow(layout.tabs, tabs.size(), pickerButtonWidth(tabs.size(), rowSpace), centreX,
+                     centreY - 22.0);
+        for (const PickerTab& tab : tabs) {
+            if (tab.id != pickerTab_) continue;
+            layPickerRow(layout.doors, tab.choices.size(),
+                         pickerButtonWidth(tab.choices.size(), rowSpace), centreX,
+                         centreY + 14.0);
+        }
     }
-    layPickerRow(layout.tabs, tabs.size(), pickerButtonWidth(tabs.size(), rowSpace), centreX,
-                 centreY - 22.0);
-    for (const PickerTab& tab : tabs) {
-        if (tab.id != pickerTab_) continue;
-        layPickerRow(layout.doors, tab.choices.size(),
-                     pickerButtonWidth(tab.choices.size(), rowSpace), centreX, centreY + 14.0);
-    }
+
+    // The XP gauge takes the middle of whatever the picker leaves above the
+    // loadout bar -- flooooio's own slot for it, over its inventory -- at its
+    // full size wherever that fits, which is every shape but the classic bar.
+    double pickerBottom = centreY;
+    for (const Rect& r : layout.tabs) pickerBottom = std::max(pickerBottom, r.bottom());
+    for (const Rect& r : layout.doors) pickerBottom = std::max(pickerBottom, r.bottom());
+    const double loadoutTop = centreY + titleLoadoutTopY(menus_.settings().classicLoadoutBar);
+    const double room = loadoutTop - pickerBottom - kTitleXpClearance * 2.0;
+    const double scale = clamp(room / kTitleXpHeight, kTitleXpMinScale, 1.0);
+    const double xpW = kTitleXpWidth * scale;
+    const double xpH = kTitleXpHeight * scale;
+    layout.xp = {centreX - xpW * 0.5, (pickerBottom + loadoutTop - xpH) * 0.5, xpW, xpH};
     return layout;
 }
 
@@ -625,6 +689,10 @@ void App::drawLobby(Canvas& canvas, double time) {
                      "door_" + std::to_string(i));
     }
 
+    // Not until the profile is here, or a returning player's first frame reads
+    // "Lvl 1".
+    if (!net_.profile().loadout.empty()) drawTitleXpBar(canvas, layout.xp);
+
     TextStyle hint;
     hint.size = 14.0;
     hint.align = Align::Centre;
@@ -659,6 +727,47 @@ void App::drawLobby(Canvas& canvas, double time) {
 
     drawTitleChat(canvas, time);
     if (statsVisible()) drawStatsCounters(canvas, true);
+}
+
+void App::drawTitleXpBar(Canvas& canvas, const Rect& track) {
+    // Gauge.ts strokes a line along the track's middle with round caps: the
+    // track as thick as the gauge, the fill at eight tenths of it. Here they
+    // are the pills those strokes paint, a cap reaching half a stroke's width
+    // past each end -- so the fill's own ends sit inside the track's.
+    const double h = track.h;
+    const double middle = track.y + h * 0.5;
+    canvas.beginPath();
+    canvas.roundRect(static_cast<float>(track.x - h * 0.5), static_cast<float>(track.y),
+                     static_cast<float>(track.w + h), static_cast<float>(h),
+                     static_cast<float>(h * 0.5));
+    setFill(canvas, kTitleXpTrack);
+    canvas.fill();
+
+    if (titleXpShown_ > 0) {
+        const double thick = h * kTitleXpFillThickness;
+        canvas.beginPath();
+        canvas.roundRect(static_cast<float>(track.x - thick * 0.5),
+                         static_cast<float>(middle - thick * 0.5),
+                         static_cast<float>(track.w * titleXpShown_ + thick),
+                         static_cast<float>(thick), static_cast<float>(thick * 0.5));
+        setFill(canvas, kTitleXpFill, std::min(1.0, titleXpShown_ / kTitleXpFadeBelow));
+        canvas.fill();
+    }
+
+    // ALT for the exact figures, as on the in-game bar.
+    const LevelProgress progress = levelFromTotalXp(net_.profile().totalXp);
+    const bool altHeld = window_.keyDown(Key::LeftAlt) || window_.keyDown(Key::RightAlt);
+    const auto whole = [](double v) { return std::to_string(std::llround(v)); };
+    TextStyle label;
+    label.size = std::max(h * kTitleXpTextShare, kTitleXpMinTextSize);
+    label.bold = true;
+    label.align = Align::Centre;
+    label.baseline = Baseline::Middle;
+    text(canvas,
+         altHeld ? "Lvl " + std::to_string(progress.level) + " - " +
+                       whole(progress.xpIntoLevel) + "/" + whole(progress.xpForNext)
+                 : "Lvl " + std::to_string(progress.level) + " Flower",
+         track.x + track.w * 0.5, middle, label);
 }
 
 // ---------------------------------------------------------------------------

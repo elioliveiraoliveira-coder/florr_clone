@@ -178,6 +178,9 @@ private:
         Rect ready;
         std::vector<Rect> tabs;
         std::vector<Rect> doors;
+        /// The XP gauge's track: where the fill runs from empty to full. Its
+        /// rounded ends stand out half its height past both sides of this.
+        Rect xp;
     };
     LobbyLayout lobbyLayout(int viewWidth, int viewHeight) const;
     /// One button of the picker's first row: a biome, or one of the three
@@ -200,6 +203,9 @@ private:
     /// The daily-login card, top-right. Painted last, over the panels, exactly
     /// as the browser build's own always-on-top widget is.
     void drawDailyStreak(Canvas&, double time);
+    /// The account's level and progress into it, as a gauge between the
+    /// spawn picker and the loadout bar.
+    void drawTitleXpBar(Canvas&, const Rect& track);
     /// The frame/ping/position readout in the bottom-right corner. On the
     /// title screens it is a fixed set of placeholder lines rather than a live
     /// readout, which is what the reference paints there.
@@ -527,6 +533,11 @@ private:
     /// When the streak card first had a state to draw, which is what its
     /// post-claim wobble is measured from. Negative until then.
     double streakSeenAt_ = -1;
+    /// The title XP gauge's fill as drawn, easing after the profile's, and the
+    /// level it belongs to. A different level starts the fill over from empty
+    /// rather than sliding back down from where the last one left off.
+    double titleXpShown_ = 0;
+    int titleXpLevel_ = 0;
 
     // -- login form --------------------------------------------------------
     std::string usernameField_;

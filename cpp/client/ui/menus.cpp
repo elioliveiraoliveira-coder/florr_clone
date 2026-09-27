@@ -354,6 +354,17 @@ double titleHintsOffsetY(bool classic) {
     return rowBottom + (metrics.capsBelow ? kLoadoutCapBelow + 10.0 : 9.0);
 }
 
+double titleLoadoutTopY(bool classic) {
+    const LoadoutMetrics& metrics = loadoutMetrics(classic);
+    // Stacked up from the box's bottom exactly as layoutLoadout stacks it, at
+    // the title's full scale: the box is wider than either row, so nothing is
+    // ever shrunk to fit here.
+    const double primaryTop = kTitleLoadoutDrop + kTitleLoadoutHeight - metrics.bottomPad -
+                              metrics.secondaryMargin * 2.0 - metrics.secondarySize -
+                              metrics.primaryMargin - metrics.primarySize;
+    return metrics.capsBelow ? primaryTop : primaryTop - kLoadoutCapAbove - kLoadoutCapReachY;
+}
+
 namespace {
 
 /// One slot's chrome: a darker rounded plate with a SHARP inner fill, never a

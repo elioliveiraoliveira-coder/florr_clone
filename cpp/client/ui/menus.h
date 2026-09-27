@@ -174,6 +174,12 @@ double inGameLoadoutBarHeight(bool classic = false, double viewWidth = 0.0);
 /// inGameLoadoutBarHeight does, and for the same reason.
 double titleHintsOffsetY(bool classic = false);
 
+/// The highest the title screen's loadout bar paints, as an offset down from
+/// the centre of the window: the primary row's top edge with the modern
+/// metrics, the key caps above that row with the classic ones. What the XP
+/// gauge over the bar has to clear.
+double titleLoadoutTopY(bool classic = false);
+
 /// Everything the settings menu owns. Kept in one struct so it can be written
 /// to disk and read back as a unit, and so nothing else has to know which of
 /// these the renderer reads and which the input layer does.
