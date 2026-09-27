@@ -908,9 +908,10 @@ std::string writeFixture(const std::string& name, const std::string& text) {
 }
 
 /// gid = local id + 1: 1 plain, 2 full, 3 corner, 4 notch, 5 diag, 6 pond,
-/// 7 wide (a shape dragged past the tile's right edge, which Tiled permits).
+/// 7 wide (a shape dragged past the tile's right edge, which Tiled permits),
+/// 8 rail (a 14-unit upright strip down the middle, the sewers grate's rail).
 constexpr const char* kShapeTileset = R"({
- "columns": 0, "name": "shapes", "tilecount": 7, "tiledversion": "1.10.1",
+ "columns": 0, "name": "shapes", "tilecount": 8, "tiledversion": "1.10.1",
  "tilewidth": 256, "tileheight": 256, "tilerendersize": "grid",
  "type": "tileset", "version": "1.10",
  "tiles": [
@@ -950,7 +951,12 @@ constexpr const char* kShapeTileset = R"({
     "objectgroup": { "type": "objectgroup", "id": 2, "name": "", "draworder": "index",
       "opacity": 1, "visible": true, "x": 0, "y": 0, "objects": [
       { "id": 1, "name": "", "type": "", "rotation": 0, "visible": true,
-        "x": 0, "y": 0, "width": 700, "height": 256 } ] } }
+        "x": 0, "y": 0, "width": 700, "height": 256 } ] } },
+  { "id": 7, "image": "tiles/rail.svg", "imagewidth": 256, "imageheight": 256,
+    "objectgroup": { "type": "objectgroup", "id": 2, "name": "", "draworder": "index",
+      "opacity": 1, "visible": true, "x": 0, "y": 0, "objects": [
+      { "id": 1, "name": "", "type": "", "rotation": 0, "visible": true,
+        "x": 121, "y": 0, "width": 14, "height": 256 } ] } }
  ]
 })";
 
@@ -2022,6 +2028,55 @@ TEST(a_body_walks_onto_a_deck_whose_tile_carries_a_whole_cell_shape) {
     CHECK(east.x < inCell(5, 1, 0.0, 0.0).x);
     CHECK(west.x != start.x);
     CHECK(east.x != start.x);
+}
+
+TEST(a_mob_cannot_step_through_a_thin_rail) {
+    // A mob meets walls as a point, and the thinnest wall authored is the
+    // sewers grate's 14-unit rail. Only the substep's length keeps a point's
+    // centre short of the rail's middle, past which the resolver's nearest face
+    // is the FAR one and the mob is put out the other side.
+    Terrain t;
+    const int cols = 5;
+    const int rows = 12;
+    std::vector<std::uint32_t> gids(cols * rows, 0);
+    for (int ty = 0; ty < rows; ++ty) gids[ty * cols + 2] = 8;   // rails down column 2
+    CHECK(loadShapeMap(t, "rail.tmj", cols, rows, gids));
+    const double west = inCell(2, 0, 121.0 * kShapeScale, 0.0).x;
+    const double east = inCell(2, 0, 135.0 * kShapeScale, 0.0).x;
+    const double y0 = kTileSize;
+    CHECK(t.blocked({(west + east) * 0.5, y0}, Realm::Overworld));
+    CHECK(!t.blocked({west - 1.0, y0}, Realm::Overworld));
+    CHECK(!t.blocked({east + 1.0, y0}, Realm::Overworld));
+
+    // Every speed from a crawl to a charge, head on and at a slant, from both
+    // sides, pressed into the rail for long enough to come to rest against it.
+    const double dt = 0.04;
+    int wrong = 0;
+    for (double perTick = 1.0; perTick <= 60.0; perTick += 1.0) {
+        for (const double slant : {0.0, 0.3, 1.0}) {
+            const Vec2 heading = Vec2{1.0, slant}.normalized();
+            Vec2 fromWest{west - 30.0, y0};
+            Vec2 fromEast{east + 30.0, y0};
+            for (int tick = 0; tick < 60; ++tick) {
+                stepCollide(t, Realm::Overworld, fromWest, heading * (perTick / dt),
+                            kMobWallRadius, dt);
+                stepCollide(t, Realm::Overworld, fromEast,
+                            Vec2{-heading.x, heading.y} * (perTick / dt), kMobWallRadius, dt);
+            }
+            if (!(fromWest.x < west) || !(fromEast.x > east)) ++wrong;
+        }
+    }
+    CHECK_EQ(wrong, 0);
+
+    // Separation's shove is one call of up to this much, and lands on a mob
+    // that may already be resting on the face.
+    const double maxShove = kMobSeparationMaxPushPerPair * kMobSeparationPushHeadroom;
+    for (double shove = 1.0; shove <= maxShove; shove += 1.0) {
+        Vec2 p{west - kMobWallRadius - 0.01, y0};
+        stepCollide(t, Realm::Overworld, p, {shove, 0.0}, kMobWallRadius, 1.0);
+        if (!(p.x < west)) ++wrong;
+    }
+    CHECK_EQ(wrong, 0);
 }
 
 TEST(a_negating_layer_does_not_cancel_a_colliding_layer_above_it) {

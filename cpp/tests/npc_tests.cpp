@@ -23,6 +23,7 @@
 #include "fixture_content.h"
 #include "server/db.h"
 #include "server/systems/combat.h"
+#include "server/systems/movement.h"
 #include "server/systems/npcs.h"
 #include "server_harness.h"
 #include "shared/game/map_elements.h"
@@ -388,14 +389,68 @@ TEST(the_shipped_garden_has_an_oracle_on_open_ground) {
         // Its default size, common: the tier is the NPC's size, and the
         // garden's is the smallest there is.
         CHECK(site.rarity == Rarity::Common);
-        // Standing where it was drawn: a body pushed out of a wall would be
-        // somewhere its author did not put it.
-        const double radius = content().mobStats(site.mobIndex, site.rarity).radius;
-        const Vec2 placed = terrain.resolveCircle(site.position, radius, site.realm);
+        // Standing where it was drawn: a centre pushed out of a wall would be
+        // somewhere its author did not put it. An NPC meets walls as a point.
+        const Vec2 placed = terrain.resolveCircle(site.position, kMobWallRadius, site.realm);
         CHECK_NEAR(placed.x, site.position.x, 1e-6);
         CHECK_NEAR(placed.y, site.position.y, 1e-6);
     }
     CHECK_EQ(oracles, 1);
+}
+
+TEST(an_npc_meets_walls_with_its_centre_not_its_body) {
+    CHECK(ensureShippedContent());
+    Terrain terrain;
+    for (int ty = 0; ty < terrain.tileRows(); ++ty) terrain.setTile(10, ty, Tile::Wall);
+    const double face = 10.0 * kTileSize;
+    World world;
+    NpcSystem npcs;
+    const std::uint16_t oracle = content().mobIndex("oracle");
+
+    // A big one, so a body-sized standoff would be unmistakable: drawn with
+    // its centre just short of the wall, it stands exactly there.
+    const Entity beside = npcs.spawnNpc(world, terrain, content(), oracle, Rarity::Mythic,
+                                        {face - 5.0, 5000.0}, Realm::Overworld, 0.0);
+    CHECK(world.get<Body>(beside).radius > 100.0);
+    CHECK_NEAR(world.get<Transform>(beside).position.x, face - 5.0, 1e-9);
+
+    // Drawn inside the wall: out to the face, not a body's width back from it.
+    const Entity inside = npcs.spawnNpc(world, terrain, content(), oracle, Rarity::Mythic,
+                                        {face + 20.0, 6000.0}, Realm::Overworld, 0.0);
+    const Vec2 at = world.get<Transform>(inside).position;
+    CHECK(!terrain.blocked(at, Realm::Overworld));
+    CHECK(at.x <= face - kMobWallRadius + 1e-6);
+    CHECK(at.x > face - 1.0);
+}
+
+TEST(a_cruising_npc_flies_up_to_a_wall_with_its_centre) {
+    // The oracle cruises on a leash about its home. Homed beside a wall, its
+    // flight takes it against the wall, and it is the CENTRE that stops there:
+    // measured from the body it could never come nearer than its radius.
+    CHECK(ensureShippedContent());
+    Terrain terrain;
+    for (int ty = 0; ty < terrain.tileRows(); ++ty) terrain.setTile(10, ty, Tile::Wall);
+    const double face = 10.0 * kTileSize;
+    World world;
+    NpcSystem npcs;
+    const Entity oracle = npcs.spawnNpc(world, terrain, content(), content().mobIndex("oracle"),
+                                        Rarity::Common, {face - 60.0, 5000.0},
+                                        Realm::Overworld, 0.0);
+    CHECK(world.get<Npc>(oracle).cruises);
+    const double radius = world.get<Body>(oracle).radius;
+
+    double now = 0.0;
+    double closest = 1e30;
+    int inside = 0;
+    for (int i = 0; i < 3000; ++i) {
+        npcs.run(world, terrain, content(), {}, now);
+        now += net::kTickSeconds * 1000.0;
+        const Vec2 at = world.get<Transform>(oracle).position;
+        if (terrain.blocked(at, Realm::Overworld) || at.x >= face) ++inside;
+        closest = std::min(closest, face - at.x);
+    }
+    CHECK_EQ(inside, 0);
+    CHECK(closest < radius * 0.5);
 }
 
 // ---------------------------------------------------------------------------

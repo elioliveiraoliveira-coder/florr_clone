@@ -82,15 +82,28 @@ inline constexpr double kMaxSaneWorldCoord = 1e9;
 /// size petals.
 inline constexpr double kMaxSubstepLength = kTileSize * 0.5 - kCollisionScanBuffer;
 
-/// Shortest a substep may be, whatever the body's radius says. A zero-radius
-/// projectile -- or a NaN one -- would otherwise ask for infinitely many
-/// substeps to cross a single tile.
+/// The substep a body's REACH is measured in when its radius is smaller than
+/// this; see kMaxSubstepCount. A zero-radius projectile -- or a NaN one --
+/// would otherwise be given no reach at all.
 inline constexpr double kMinSubstepLength = 24.0;
 
-/// Hard cap on substeps per entity per tick. Reached only by a velocity that
-/// should not exist; the body is moved as far as this many substeps allow and
-/// the rest of the tick's displacement is dropped. Taking LONGER substeps
-/// instead is precisely how a body ends up on the far side of a wall.
+/// How far past its own hull one substep may carry a body's centre.
+///
+/// A body pressed against a wall rests one hull off the face, so a substep
+/// drives the centre that much less than its length into what it walks into.
+/// Past half the wall's thickness the resolver's nearest face is the FAR one
+/// and the body comes out the other side. The thinnest wall authored is the
+/// sewers grate's 14-unit rail, and this keeps the centre short of its middle.
+/// It shortens the substep only for hulls under kMinSubstepLength minus this --
+/// a mob, which meets walls as a point (kMobWallRadius), and not a flower.
+inline constexpr double kMaxSubstepPenetration = 6.5;
+
+/// Cap on a tick's travel, counted in substeps of kMinSubstepLength or the
+/// body's radius, whichever is longer. Reached only by a velocity that should
+/// not exist; the body is moved that far and the rest of the tick's
+/// displacement is dropped. Taking LONGER substeps instead is precisely how a
+/// body ends up on the far side of a wall. A body whose substeps
+/// kMaxSubstepPenetration shortens takes more of them over the same reach.
 inline constexpr int kMaxSubstepCount = 16;
 
 /// Speed ceiling applied to every entity before it is integrated, so one
@@ -106,6 +119,14 @@ inline constexpr double kMaxCollisionRadius = kTileSize * 4.0;
 /// tile's edge and read as inside the wall from then on. Half a unit is
 /// invisible and makes the push-out well defined for every body.
 inline constexpr double kMinCollisionRadius = 0.5;
+
+/// The radius a mob meets walls with: none. Its Body radius is what it fights
+/// and is shoved by; against terrain only its centre counts, so a mob against
+/// a wall overlaps it, and goes through any gap its centre fits through.
+/// Every mob-versus-wall resolution -- its step, a shove, separation, a trailing
+/// segment, a spawn -- uses this and never the Body radius, and so does every
+/// NPC's, an NPC being a mob standing on the players' map.
+inline constexpr double kMobWallRadius = kMinCollisionRadius;
 
 // ---------------------------------------------------------------------------
 // The step

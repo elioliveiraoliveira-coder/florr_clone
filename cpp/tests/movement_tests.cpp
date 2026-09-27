@@ -1,6 +1,7 @@
 #include "test.h"
 
 #include "server/systems/movement.h"
+#include "server_harness.h"
 
 #include <algorithm>
 #include <cmath>
@@ -349,9 +350,12 @@ TEST(knockback_cannot_put_a_mob_through_a_wall) {
     fx.world.get<Knockback>(mob).impulse = {400, 0};
     fx.step(1);
 
+    // Against the face: a mob meets walls as a point, so its body overlaps
+    // the wall it was shoved into, but its centre never enters it.
     const Vec2 at = fx.positionOf(mob);
     CHECK(!fx.terrain.blocked(at, Realm::Overworld));
-    CHECK(at.x <= kWallWest - 20.0 + 1e-6);
+    CHECK(at.x <= kWallWest - kMobWallRadius + 1e-6);
+    CHECK(at.x > kWallWest - 1.0);
 }
 
 TEST(a_nonsense_impulse_is_dropped_rather_than_propagated) {
@@ -423,7 +427,7 @@ TEST(an_absurd_velocity_cannot_tunnel_through_a_wall) {
         fx.step(1);
         const Vec2 at = fx.positionOf(mob);
         CHECK(!fx.terrain.blocked(at, Realm::Overworld));
-        CHECK(at.x <= kWallWest - 20.0 + 1e-6);
+        CHECK(at.x <= kWallWest - kMobWallRadius + 1e-6);
     }
     // It did travel -- the cap slows it, it does not freeze it.
     CHECK(fx.positionOf(mob).x > 2000.0 + (kWallWest - 2000.0) * 0.5);
@@ -434,8 +438,9 @@ TEST(one_tick_of_travel_is_bounded_by_the_substep_budget) {
     const Entity mob = fx.spawnMob({30000, 30000}, 20.0);
     fx.world.get<Motion>(mob).velocity = {1e9, 0};
     fx.step(1);
-    // Radius 20 is below the substep floor, so the budget is the floor times
-    // the substep cap. Exceeding it would mean the loop took longer steps --
+    // A mob meets walls as a point, below the substep floor, so the budget is
+    // the floor times the substep cap -- covered in shorter substeps, never
+    // extended by them. Exceeding it would mean the loop took longer steps --
     // which is how a body ends up on the far side of a wall.
     const double budget = kMinSubstepLength * kMaxSubstepCount;
     CHECK(fx.positionOf(mob).x - 30000.0 <= budget + 1e-6);
@@ -535,7 +540,68 @@ TEST(water_blocks_a_mob_like_a_wall) {
 
     const Vec2 at = fx.positionOf(mob);
     CHECK(!fx.terrain.blocked(at, Realm::Overworld));
-    CHECK(at.x <= kWallWest - 20.0 + 1e-6);
+    CHECK(at.x <= kWallWest - kMobWallRadius + 1e-6);
+}
+
+TEST(a_mob_meets_a_wall_with_its_centre_not_its_body) {
+    // The body is what fights and is shoved; against terrain only the centre
+    // counts. A big mob walks until its middle touches the wall, half of it
+    // drawn over the stone -- where a flower stops a whole radius short.
+    Fixture fx;
+    fx.wallColumn(10);
+    const Entity mob = fx.spawnMob({2000, 5000}, 80.0);
+    for (int i = 0; i < 200; ++i) {
+        fx.world.get<Motion>(mob).velocity = {300, 0};
+        fx.step(1);
+    }
+
+    const Vec2 at = fx.positionOf(mob);
+    CHECK(!fx.terrain.blocked(at, Realm::Overworld));
+    CHECK(at.x <= kWallWest - kMobWallRadius + 1e-6);
+    CHECK(at.x > kWallWest - 1.0);
+    // Blocked, not merely slowed: nothing of the velocity into the wall is left.
+    CHECK_NEAR(fx.velocityOf(mob).x, 0.0, 1e-6);
+}
+
+TEST(a_mob_fits_through_a_gap_narrower_than_its_body) {
+    // One open cell in a wall column is a gap a quarter of this mob's width;
+    // its centre fits, so it goes through.
+    Fixture fx;
+    fx.wallColumn(10);
+    fx.terrain.setTile(10, 19, Tile::Ground);   // y in [19, 20) tiles
+    const double gapMid = 19.5 * kTileSize;
+    const Entity mob = fx.spawnMob({kWallWest - 300.0, gapMid}, 4.0 * kTileSize * 0.5);
+    for (int i = 0; i < 120; ++i) {
+        fx.world.get<Motion>(mob).velocity = {300, 0};
+        fx.step(1);
+    }
+    CHECK(fx.positionOf(mob).x > kWallEast + 100.0);
+    CHECK(!fx.terrain.blocked(fx.positionOf(mob), Realm::Overworld));
+}
+
+TEST(separation_cannot_shove_a_mob_into_a_wall) {
+    // Two mobs piled up against a wall: the one pushed toward it stops with
+    // its centre at the face, however much of its body that puts over the wall.
+    // Separation reads each mob's config, so this one needs content.
+    std::string error;
+    CHECK(loadContent(testsupport::dataDir(), error));
+    if (!error.empty()) return;
+    const std::uint16_t ladybug = content().mobIndex("ladybug");
+
+    Fixture fx;
+    fx.wallColumn(10);
+    const Entity a = fx.spawnMob({kWallWest - 2.0, 5000}, 40.0);
+    const Entity b = fx.spawnMob({kWallWest - 12.0, 5000}, 40.0);
+    for (const Entity e : {a, b}) fx.world.add<MobType>(e, MobType{ladybug, Rarity::Common, 1.0});
+    fx.step(3);
+
+    for (const Entity e : {a, b}) {
+        CHECK(!fx.terrain.blocked(fx.positionOf(e), Realm::Overworld));
+        CHECK(fx.positionOf(e).x <= kWallWest - kMobWallRadius + 1e-6);
+    }
+    CHECK(fx.positionOf(a).x > kWallWest - 1.0);
+    // And the separation did act: the one with room to go was pushed away.
+    CHECK(fx.positionOf(a).x - fx.positionOf(b).x > 20.0);
 }
 
 TEST(movement_does_not_apply_the_ai_owned_mob_slow_twice) {

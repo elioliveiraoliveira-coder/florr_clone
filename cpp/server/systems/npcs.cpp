@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "server/systems/mob_ai.h"
+#include "server/systems/movement.h"
 #include "shared/net/protocol.h"
 
 namespace flix {
@@ -58,8 +59,9 @@ Entity NpcSystem::spawnNpc(World& world, const Terrain& terrain, const ContentRe
     const MobStats stats = content.mobStats(mobIndex, rarity);
     const double radius = stats.radius > 0.0 ? stats.radius : kMobBaseRadius;
 
-    // Nothing ever moves it, so it has to START somewhere its body fits.
-    const Vec2 position = terrain.resolveCircle(at, radius, realm);
+    // It meets walls as a point, as its mob does, so it has to start with its
+    // centre on open ground -- and one standing still is never moved again.
+    const Vec2 position = terrain.resolveCircle(at, kMobWallRadius, realm);
 
     const Entity e = world.create();
     world.add<NpcTag>(e);
@@ -140,9 +142,11 @@ void NpcSystem::run(World& world, const Terrain& terrain, const ContentRegistry&
             // friction is stated per tick.
             const Vec2 velocity = stepBeeCruise(npc.cruise, npc.speed, radius, nowMillis,
                                                 net::kTickSeconds, rng_);
+            // Against walls as a point, and stepped as a mob's move is, so a
+            // point cannot plunge through a thin wall in one go.
             const Vec2 from = transform.position;
-            transform.position = terrain.resolveCircle(
-                transform.position + velocity * net::kTickSeconds, radius, transform.realm);
+            stepCollide(terrain, transform.realm, transform.position, velocity, kMobWallRadius,
+                        net::kTickSeconds);
             // Its eye is on where it is GOING -- the step it actually took, so
             // one sliding along a wall looks along the wall -- and nowhere
             // else, flowers or no flowers. Held on the last bearing through a

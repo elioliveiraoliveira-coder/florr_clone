@@ -1,5 +1,6 @@
 #include "server/systems/mob_ai.h"
 
+#include "server/systems/movement.h"
 #include "shared/game/config.h"
 #include "shared/game/constants.h"
 #include "shared/game/rarity.h"
@@ -466,8 +467,7 @@ void MobAiSystem::layWeb(World& world, Entity self, double nowMillis,
 // ---------------------------------------------------------------------------
 
 Entity MobAiSystem::acquireTarget(World& world, const Terrain& terrain, const SpatialGrid& grid,
-                                  Entity self, Vec2 from, Realm realm, double skin,
-                                  double range) {
+                                  Entity self, Vec2 from, Realm realm, double range) {
     ++stats_.targetScans;
 
     // Never acquire what targetHeld() drops on the very next tick. A range
@@ -484,17 +484,18 @@ Entity MobAiSystem::acquireTarget(World& world, const Terrain& terrain, const Sp
         const Transform* transform = world.tryGet<Transform>(candidate);
         if (transform == nullptr) continue;
 
-        // Each flower is noticed inside its own circle: poo shrinks the range
-        // past the mob's skin, and a raised aggro radius then adds on top. How
-        // far inside that circle the flower stands is one number for both "is
-        // anyone in range" and "who is the most conspicuous". The skin is left
-        // whole -- a flower pressed against a mob has been noticed.
+        // Each flower is noticed inside its own circle: poo shrinks the range,
+        // and a raised aggro radius then adds on top. How far inside that
+        // circle the flower stands is one number for both "is anyone in range"
+        // and "who is the most conspicuous". All of it is measured from the
+        // mob's centre, the point it meets the world with (kMobWallRadius),
+        // so poo shrinks the whole circle -- the body under it included.
         const PlayerModifiers* mods = world.tryGet<PlayerModifiers>(candidate);
         const double bonus = mods != nullptr ? mods->aggroRadiusBonus : 0.0;
         const double scale = mods != nullptr ? mods->aggroRangeScale : 1.0;
         const double gap = distance(from, transform->position);
         if (gap > kMobTargetRetainRadius) continue;
-        const double score = gap - (skin + (range - skin) * scale + bonus);
+        const double score = gap - (range * scale + bonus);
         if (score > 0.0) continue;
         candidates_.push_back(Candidate{candidate, transform->position, score});
     }
@@ -1145,15 +1146,12 @@ bool MobAiSystem::steerAggressive(World& world, const Terrain& terrain, const Sp
                                   const Body& body, MobAi& ai, const Drive& drive,
                                   double chaseSpeed, double nowMillis, double dt, Vec2& desired,
                                   Vec2& facing, CommandBuffer& commands) {
-    // Measured from the mob's SKIN, not from its centre. `range` is authored as
-    // how far outside itself a mob notices a flower, and a body grows by nearly
-    // thirty times across the ladder: a super wasp is 436 units in radius and
-    // carries a 300-unit range, so centre-to-centre its entire aggro circle
-    // lies inside its own body and nothing outside it can ever be seen. The
-    // range grows on the same size ladder as the body, so skin plus range is
-    // the common mob's whole aggro circle scaled with it.
-    const double range =
-        (ai.aggroRange > 0.0 ? ai.aggroRange : kEnemyChaseRange) + body.radius;
+    // Measured from the mob's CENTRE, the point it meets the world with
+    // (kMobWallRadius), not from the skin of its body. That leaves no big mob
+    // blind: the range grows on the same size ladder as the body, so a mob's
+    // circle reaches the same multiple of its own radius at every tier -- a
+    // super wasp's is 3,355 units against a 436-unit body.
+    const double range = ai.aggroRange > 0.0 ? ai.aggroRange : kEnemyChaseRange;
 
     // Provocation first, which is where the reference has it: over there it
     // happens in the damage phase and the AI merely validates what it left
@@ -1187,7 +1185,7 @@ bool MobAiSystem::steerAggressive(World& world, const Terrain& terrain, const Sp
         // into range rather than waiting for the pet to die or walk off.
         if (ai.target == NULL_ENTITY || world.has<Pet>(ai.target)) {
             const Entity player = acquireTarget(world, terrain, grid, self, transform.position,
-                                                transform.realm, body.radius, range);
+                                                transform.realm, range);
             if (player != NULL_ENTITY) ai.target = player;
         }
         // A pet is what is left when no player is in range, which is what lets
@@ -1557,11 +1555,9 @@ void MobAiSystem::steerPet(World& world, const Terrain& terrain, const SpatialGr
     // owner -- so neutral and hostile run the same pet AI. Passive stays
     // passive, and a sandstorm keeps drifting.
     const bool attacks = drive.ai == AiKind::Hostile || drive.ai == AiKind::Neutral;
-    // From the skin, as the wild mob's range is: a pet is graded on the same
-    // ladder and an ownerless high-tier one, which has only this range and no
-    // owner's screen to see through, would otherwise go blind the same way.
-    const double range =
-        (ai.aggroRange > 0.0 ? ai.aggroRange : kEnemyChaseRange) + body.radius;
+    // From the centre, as the wild mob's range is: a pet meets the world with
+    // the same point, and its range rides the same ladder as its body.
+    const double range = ai.aggroRange > 0.0 ? ai.aggroRange : kEnemyChaseRange;
 
     Vec2 desired{0, 0};
     Vec2 facing{0, 0};
@@ -1848,8 +1844,8 @@ void MobAiSystem::placeFollower(World& world, const Terrain& terrain, Entity sel
 
     // A segment lives in its leader's space, whatever it was born into.
     transform->realm = leader->realm;
-    const Vec2 placed =
-        terrain.resolveCircle(leader->position + direction * spacing, radius, leader->realm);
+    const Vec2 placed = terrain.resolveCircle(leader->position + direction * spacing,
+                                              kMobWallRadius, leader->realm);
     transform->position = placed;
     // The follower is carried, not driven. Leaving a velocity on it would have
     // the movement phase integrate it a second time this tick.

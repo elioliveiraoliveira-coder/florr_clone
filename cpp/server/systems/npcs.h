@@ -98,7 +98,8 @@ public:
              const std::vector<RealmPoint>& players, double nowMillis);
 
     /// Puts one NPC into the world: the mob `mobIndex` at `rarity`, standing
-    /// at `at` (pushed clear of any wall its body would overlap), on the side
+    /// at `at` (moved only if its centre is inside a wall -- an NPC meets
+    /// walls as a point, kMobWallRadius, as a mob does), on the side
     /// its mob's `npc` block names -- or on `side`, when the caller gives one.
     /// The one path an NPC comes from -- a site, and the admin console's
     /// `spawn_npc`, both go through here. Any mob will do: one with no `npc`

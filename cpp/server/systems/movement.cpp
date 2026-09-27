@@ -171,8 +171,12 @@ StepOutcome stepCollide(const Terrain& terrain, Realm realm, Vec2& position, Vec
     Vec2 delta = sanitizeMovementVelocity(velocity) * (dt > 0.0 ? dt : 0.0);
     double distance = delta.length();
 
-    const double stepLength = substepLength(hull);
-    const double reach = stepLength * kMaxSubstepCount;
+    // The reach is measured in substeps of the body's own size; a small body
+    // then takes shorter ones than that, so it cannot step through a thin wall,
+    // and more of them to cover the same ground.
+    const double reach = substepLength(hull) * kMaxSubstepCount;
+    const double stepLength = std::min(substepLength(hull), hull + kMaxSubstepPenetration);
+    const int maxSteps = static_cast<int>(std::ceil(reach / stepLength));
     if (distance > reach) {
         // Truncate the tick's travel instead of lengthening the substeps. A
         // body that only crawls this tick is a visible glitch; a body that
@@ -184,7 +188,7 @@ StepOutcome stepCollide(const Terrain& terrain, Realm realm, Vec2& position, Vec
     int steps = 1;
     if (distance > stepLength) {
         steps = static_cast<int>(std::ceil(distance / stepLength));
-        if (steps > kMaxSubstepCount) steps = kMaxSubstepCount;   // ceil() rounding
+        if (steps > maxSteps) steps = maxSteps;   // ceil() rounding
     }
 
     const Vec2 stepDelta = delta / static_cast<double>(steps);
@@ -422,7 +426,7 @@ void MovementSystem::stepTeleporters(World& world, double nowMillis, double dt) 
 void MovementSystem::moveMobs(World& world, const Terrain& terrain,
                               double nowMillis, double dt) {
     const ContentRegistry& registry = content();
-    queries_->mobs.each([&](Entity e, MobTag&, Transform& transform, Motion& motion, Body& body) {
+    queries_->mobs.each([&](Entity e, MobTag&, Transform& transform, Motion& motion, Body&) {
         // The shove a petal or a blast queued. The TypeScript server wrote
         // this vector on every hit and then never read it back, so a mob
         // walked straight through a ring; that was a bug, not a design.
@@ -436,8 +440,8 @@ void MovementSystem::moveMobs(World& world, const Terrain& terrain,
         const Vec2 knockback = takeKnockback(world, e);
         if ((knockback.x != 0.0 || knockback.y != 0.0) &&
             !anchoredAgainstKnockback(world, registry, e)) {
-            stepCollide(terrain, transform.realm, transform.position, knockback, body.radius, 1.0,
-                        true, true);
+            stepCollide(terrain, transform.realm, transform.position, knockback, kMobWallRadius,
+                        1.0, true, true);
         }
 
         const Vec2 velocity = sanitizeMovementVelocity(motion.velocity);
@@ -454,7 +458,7 @@ void MovementSystem::moveMobs(World& world, const Terrain& terrain,
 
         const Vec2 attempted = velocity * envScale;
         const StepOutcome out = stepCollide(terrain, transform.realm, transform.position, attempted,
-                                            body.radius, dt);
+                                            kMobWallRadius, dt);
 
         // No friction is applied here. The AI phase runs the shared
         // integrateVelocity() against its desired heading and so owns a mob's
@@ -799,9 +803,13 @@ void MovementSystem::separateMobs(World& world, const Terrain& terrain) {
         Transform* transform = world.tryGet<Transform>(entry.entity);
         if (!transform) continue;
         // Separation must not shove a mob into a wall. This runs after the
-        // wall pass, so a violation would be on screen for a whole tick.
-        transform->position = terrain.resolveCircle(
-            entry.position + entry.push.clampedLength(cap), entry.radius, entry.realm);
+        // wall pass, so a violation would be on screen for a whole tick. The
+        // push is stepped, not resolved in one go: it can be longer than a
+        // point is allowed to plunge into a thin wall in one substep.
+        Vec2 position = entry.position;
+        stepCollide(terrain, entry.realm, position, entry.push.clampedLength(cap), kMobWallRadius,
+                    1.0);
+        transform->position = position;
     }
 }
 

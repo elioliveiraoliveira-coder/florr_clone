@@ -1,6 +1,7 @@
 #include "server/systems/spawning.h"
 
 #include "server/systems/mob_ai.h"
+#include "server/systems/movement.h"
 
 #include <algorithm>
 #include <cmath>
@@ -392,10 +393,10 @@ Entity SpawnSystem::spawnMobAt(World& world, const Terrain& terrain, const Conte
     const double jitter = rollSizeJitter(config, rarity, rng);
     const double radius = stats.radius * jitter;
 
-    // resolveCircle, not a blocked() test: the caller hands over a point and
-    // the mob is a body, so a spot one unit from a wall is legal as a point and
-    // embedded as a circle.
-    const Vec2 at = terrain.resolveCircle(position, radius, realm);
+    // A mob meets walls as a point, so any open spot will do; resolveCircle
+    // is for the callers -- a nest, a script, a summon -- that hand over a
+    // point inside one.
+    const Vec2 at = terrain.resolveCircle(position, kMobWallRadius, realm);
 
     // Held rather than passed straight through: a centipede's body is laid out
     // along its head's facing, and the chain is built once the head is whole.

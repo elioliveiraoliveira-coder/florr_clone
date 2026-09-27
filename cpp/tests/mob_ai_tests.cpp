@@ -434,51 +434,69 @@ TEST(a_raised_aggro_radius_is_noticed_from_further_away) {
 
 TEST(worn_poo_shrinks_the_range_a_mob_notices_that_player_from) {
     CHECK(contentReady());
-    // 270 past the skin: inside a soldier ant's 300, outside the 225 a common
-    // poo leaves it. The bare flower beside it is the control.
+    // 270 from the centre: inside a soldier ant's 300, outside the 225 a
+    // common poo leaves it. The bare flower beside it is the control.
     Sim hidden;
     const Entity mob = hidden.spawnMob("soldier_ant", kOrigin);
-    const double skin = hidden.world.get<Body>(mob).radius;
-    hidden.spawnPlayer(kOrigin + Vec2{skin + 270.0, 0}, 0.0, 0.75);
+    hidden.spawnPlayer(kOrigin + Vec2{270.0, 0}, 0.0, 0.75);
     hidden.tickIntent(5);
     CHECK_EQ(hidden.brainOf(mob).target, NULL_ENTITY);
     CHECK(hidden.totalScans > 0);
 
     Sim seen;
     const Entity control = seen.spawnMob("soldier_ant", kOrigin);
-    const Entity bare = seen.spawnPlayer(kOrigin + Vec2{skin + 270.0, 0});
+    const Entity bare = seen.spawnPlayer(kOrigin + Vec2{270.0, 0});
     seen.tickIntent(5);
     CHECK_EQ(seen.brainOf(control).target, bare);
 
     // Inside the shrunk range it is noticed as ever.
     Sim close;
     const Entity near = close.spawnMob("soldier_ant", kOrigin);
-    const Entity stinky = close.spawnPlayer(kOrigin + Vec2{skin + 200.0, 0}, 0.0, 0.75);
+    const Entity stinky = close.spawnPlayer(kOrigin + Vec2{200.0, 0}, 0.0, 0.75);
     close.tickIntent(5);
     CHECK_EQ(close.brainOf(near).target, stinky);
 }
 
-TEST(poo_shrinks_only_the_range_past_the_skin) {
+TEST(aggro_is_measured_from_the_mobs_centre_not_its_skin) {
     CHECK(contentReady());
-    // Apex poo leaves a 300 range at about 17 units, but a flower standing at
-    // the mob's skin is noticed however little range is left.
+    // A mob meets the world as a point, and notices from that point. Just
+    // outside the range from the centre is outside it, however much body the
+    // mob has between its centre and the flower.
+    Sim sim;
+    const Entity mob = sim.spawnMob("soldier_ant", kOrigin, Rarity::Mythic);
+    const double range = sim.brainOf(mob).aggroRange;
+    const double skin = sim.world.get<Body>(mob).radius;
+    CHECK(skin > 100.0);   // enough body that measuring from it would matter
+    const Entity player = sim.spawnPlayer(kOrigin + Vec2{range + 20.0, 0});
+    sim.tickIntent(5);
+    CHECK_EQ(sim.brainOf(mob).target, NULL_ENTITY);
+
+    sim.world.get<Transform>(player).position = kOrigin + Vec2{range - 20.0, 0};
+    sim.tickIntent(5);
+    CHECK_EQ(sim.brainOf(mob).target, player);
+}
+
+TEST(poo_shrinks_the_whole_range_body_included) {
+    CHECK(contentReady());
+    // Apex poo leaves a 300 range at about 17 units -- less than the ant's own
+    // radius -- and nothing is exempt from the cut: a flower brushing the
+    // mob's body is past what is left, so it goes unnoticed.
     Sim sim;
     const Entity mob = sim.spawnMob("soldier_ant", kOrigin);
     const double skin = sim.world.get<Body>(mob).radius;
-    const Entity player = sim.spawnPlayer(kOrigin + Vec2{skin + 10.0, 0}, 0.0, std::pow(0.75, 10));
+    sim.spawnPlayer(kOrigin + Vec2{skin + 10.0, 0}, 0.0, std::pow(0.75, 10));
     sim.tickIntent(5);
-    CHECK_EQ(sim.brainOf(mob).target, player);
+    CHECK_EQ(sim.brainOf(mob).target, NULL_ENTITY);
 }
 
 TEST(a_mob_picks_the_bare_flower_over_a_nearer_one_wearing_poo) {
     CHECK(contentReady());
     Sim sim;
     const Entity mob = sim.spawnMob("soldier_ant", kOrigin);
-    const double skin = sim.world.get<Body>(mob).radius;
     // 180 out is 45 inside the 225 a common poo leaves; 220 out is 80 inside
     // a bare 300. The poo flower is nearer, but the bare one stands out more.
-    sim.spawnPlayer(kOrigin + Vec2{skin + 180.0, 0}, 0.0, 0.75);
-    const Entity bare = sim.spawnPlayer(kOrigin + Vec2{-(skin + 220.0), 0});
+    sim.spawnPlayer(kOrigin + Vec2{180.0, 0}, 0.0, 0.75);
+    const Entity bare = sim.spawnPlayer(kOrigin + Vec2{-220.0, 0});
     sim.tickIntent(5);
     CHECK_EQ(sim.brainOf(mob).target, bare);
 }
@@ -1423,7 +1441,7 @@ TEST(a_stinger_shooter_comes_round_before_it_fires) {
     CHECK(contentReady());
     Sim sim;
     const Entity hornet = sim.spawnMob("hornet", kOrigin);
-    // Inside the hornet's 300-unit aggro range, measured from its skin: with
+    // Inside the hornet's 300-unit aggro range, measured from its centre: with
     // nothing integrating velocity below, a flower out of range never comes
     // into it.
     const Entity player = sim.spawnPlayer(kOrigin + Vec2{250, 0});
@@ -2181,6 +2199,18 @@ double chaseSpeedOf(const char* id, Rarity rarity = Rarity::Common) {
     return content().mobStats(content().mobIndex(id), rarity).chaseSpeed;
 }
 
+/// Where a common shooter's flower has to stand to be chased: inside the aggro
+/// range, which is measured from the mob's centre, and outside the standoff it
+/// holds. Midway, because the two are only a few units apart for a hornet.
+double insideAggroOutsideStandoff(const char* id) {
+    const std::uint16_t index = content().mobIndex(id);
+    const MobStats stats = content().mobStats(index, Rarity::Common);
+    const double standoff = shooterStandoff(content().mob(index).projectile.distance,
+                                            stats.radius, kPlayerBaseRadius);
+    CHECK(standoff < stats.aggroRange);
+    return (standoff + stats.aggroRange) * 0.5;
+}
+
 } // namespace
 
 TEST(a_bee_ai_always_mob_weaves_on_the_chase_without_losing_ground) {
@@ -2214,9 +2244,9 @@ TEST(a_fast_chaser_weaves_as_wide_as_a_slow_one) {
 TEST(a_bee_ai_idle_stinger_closes_on_a_flower_straight) {
     CHECK(contentReady());
     // Same cruise off a target as the fly, but the approach is the line its
-    // shot is aimed along. 330 is outside the hornet's standoff, so it keeps
-    // closing and there is a velocity to measure.
-    CHECK(chaseSplit("hornet", 330.0).widestSwing < 1e-6);
+    // shot is aimed along. Outside the hornet's standoff, so it keeps closing
+    // and there is a velocity to measure.
+    CHECK(chaseSplit("hornet", insideAggroOutsideStandoff("hornet")).widestSwing < 1e-6);
 }
 
 // ---------------------------------------------------------------------------
@@ -2229,7 +2259,8 @@ TEST(a_shooter_closes_to_its_standoff_and_stops_there) {
     const Entity hornet = sim.spawnMob("hornet", kOrigin);
     // Inside the hornet's aggro range and outside the gap it wants to hold, so
     // the only way it reaches the standoff is by walking there.
-    const Entity player = sim.spawnPlayer(kOrigin + Vec2{330, 0});
+    const double start = insideAggroOutsideStandoff("hornet");
+    const Entity player = sim.spawnPlayer(kOrigin + Vec2{start, 0});
 
     const std::uint16_t index = content().mobIndex("hornet");
     const double radius = sim.world.get<Body>(hornet).radius;
@@ -2237,11 +2268,11 @@ TEST(a_shooter_closes_to_its_standoff_and_stops_there) {
     // kProjectileReachReferenceScale), which is what makes this readable.
     const double standoff = shooterStandoff(content().mob(index).projectile.distance, radius,
                                             kPlayerBaseRadius);
-    CHECK(standoff < 330.0);
+    CHECK(standoff < start);
 
     sim.tick(200);
     // It closed...
-    CHECK(sim.gap(hornet, player) < 330.0);
+    CHECK(sim.gap(hornet, player) < start);
     // ...to the gap and no further. A tick of travel of slack either way,
     // because the mob stops on the tick it arrives rather than mid-step.
     const double step =
@@ -2330,11 +2361,11 @@ TEST(a_shooter_closes_instead_of_firing_at_what_it_cannot_hit) {
 
 TEST(a_top_tier_shooter_still_aggros_and_fires_from_outside_its_own_body) {
     CHECK(contentReady());
-    // Aggro is measured from the mob's skin, so the authored range means the
-    // same thing at every tier. Measured from the CENTRE it did not: a super
-    // wasp is 436 units in radius and carries a 300-unit range, which put its
-    // whole aggro circle inside itself -- it never saw a flower, never chased
-    // one and never fired, at super and at every tier above it.
+    // Aggro is measured from the mob's centre, and that only works because the
+    // range grows with the body. When it did not, a super wasp was 436 units
+    // in radius and carried a 300-unit range, which put its whole aggro circle
+    // inside itself -- it never saw a flower, never chased one and never fired,
+    // at super and at every tier above it.
     for (const Rarity rarity : {Rarity::Super, Rarity::Unique, Rarity::Apex}) {
         for (const char* id : {"hornet", "wasp"}) {
             Sim sim;

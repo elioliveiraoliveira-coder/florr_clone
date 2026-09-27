@@ -711,10 +711,10 @@ private:
                          double nowMillis, double dt, Vec2& desired, Vec2& facing,
                          CommandBuffer& commands);
 
-    /// `range` is measured from the mob's centre and `skin` is the part of it
-    /// that is the mob's own body -- a flower's poo shrinks what lies past it.
+    /// `range` is measured from the mob's centre -- the point it meets the
+    /// world with -- and a flower's poo shrinks all of it.
     Entity acquireTarget(World& world, const Terrain& terrain, const SpatialGrid& grid,
-                         Entity self, Vec2 from, Realm realm, double skin, double range);
+                         Entity self, Vec2 from, Realm realm, double range);
     /// The PET a wild mob settles for when no flower is to be had. Distinct
     /// from acquirePetPrey() below, which is the wild mob a pet goes after.
     ///
