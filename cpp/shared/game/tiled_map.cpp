@@ -899,8 +899,21 @@ bool TiledMap::load(const std::string& path, std::string& errorOut) {
                 const std::string kind = classOf(object);
                 // An object of the wrong class on a kind's layer is an editing
                 // mistake, and one that would otherwise turn a door into a
-                // spawn band silently. Skipped, not guessed at.
-                if (!kind.empty() && kind != spec.kind) continue;
+                // spawn band silently. Skipped, not guessed at -- but out loud,
+                // or the object simply is not there and nothing says why.
+                //
+                // The LAYER's own name is not a wrong class. It is what an
+                // author reaches for (the jungle's ten dummies were "npcs" on
+                // the "npcs" layer, and none of them ever stood), and it names
+                // this layer's kind as plainly as the singular does.
+                if (!kind.empty() && kind != spec.kind && kind != spec.layer) {
+                    std::fprintf(stderr,
+                                 "[map] object \"%s\" on layer \"%s\" has class \"%s\", not "
+                                 "\"%s\"; it is ignored\n",
+                                 object["name"].asString().c_str(), spec.layer, kind.c_str(),
+                                 spec.kind);
+                    continue;
+                }
 
                 const Json custom = propertiesOf(object);
                 Json properties = Json::object();

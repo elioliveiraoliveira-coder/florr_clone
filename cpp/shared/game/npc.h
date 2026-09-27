@@ -10,7 +10,10 @@
 // and AI, and it fights like any other mob.
 //
 // An NPC is placed by a map (an `npc` object on its `npcs` layer) or by an
-// admin's `spawn_npc`. It is not a MobTag entity, so no system that hunts,
+// admin's `spawn_npc`. A map may only place a mob that HAS an `npc` block; the
+// admin may place any mob at all, taking the side from its block when it has
+// one, from the command when it names one, and the players' side otherwise --
+// what an empty block means. It is not a MobTag entity, so no system that hunts,
 // farms, homes on, drifts or recycles mobs ever sees it -- bots do not farm
 // it, pets do not chase it, petals are not attracted to it and the
 // unseen-despawn sweep does not recycle it.
@@ -21,7 +24,11 @@
 //
 //   * on the players' team (the oracle) it refuses every hit outright;
 //   * on any other (the target dummy, on the hostiles') it takes every hit its
-//     side's rules allow, flashes, is numbered and counted, and loses nothing.
+//     side's rules allow, flashes, is numbered and counted, and loses nothing
+//     -- and its body hits back as its mob's does: a flower touching it is
+//     bumped and bitten, and a petal striking it pays for the swing out of its
+//     own health, so a ring on a dummy breaks and reloads as it would on the
+//     real thing. That is what makes the dummy's DPS a number worth reading.
 //
 // The client draws the mob's plate over it with the bar in its invulnerable
 // state, which is what says both of those at a glance.
@@ -76,6 +83,16 @@ inline std::string oracleCooldownText(double remainingMillis) {
     return "You'll be able to craft again in " + std::to_string(minutes) +
            (minutes == 1 ? " minute" : " minutes");
 }
+
+/// How far past exact overlap a flower's body and an NPC's still count as
+/// touching, for the contact hit either lands on the other.
+///
+/// A flower cannot stand inside an NPC: movement puts it back out flush
+/// against the body (MovementSystem::pushOutOfNpcs) before combat looks, and
+/// flush IS the contact distance -- so a strict overlap test calls about half
+/// of those touches a miss, on nothing but rounding. A unit is far above that
+/// error and far below anything a player could see as a gap.
+inline constexpr double kNpcTouchSlack = 1.0;
 
 /// How far off an NPC notices a flower and turns to look at it. Past this it
 /// glances about on its own.

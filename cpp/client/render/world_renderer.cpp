@@ -550,10 +550,11 @@ void WorldRenderer::ingestEvents(WorldView& view) {
         const auto it = view.entities().find(netId);
         return it != view.entities().end() && it->second.kind == net::EntityKind::Player;
     };
-    // The dummy exists to be hit at, so it reports what it is being hit for.
-    // The browser build measures that on the server; nothing carries it on the
-    // wire here, so the same ten-second window is kept from the damage events
-    // the client is already being sent.
+    // The dummy exists to be hit at, so it reports what it is being hit for --
+    // by YOU. The same ten-second window the browser build's server kept, but
+    // over the damage events the server marks as this viewer's own
+    // (net::DamageByViewer): a dummy is a measure of your build, and one that
+    // summed everybody's hits would credit you with the flower beside you.
     const auto isTargetDummy = [this, &view](std::uint32_t netId) {
         if (!content_) return false;
         const auto it = view.entities().find(netId);
@@ -649,7 +650,7 @@ void WorldRenderer::ingestEvents(WorldView& view) {
     for (const ViewEvent& event : view.events()) {
         switch (event.kind) {
             case net::EventKind::Damage: {
-                if (isTargetDummy(event.netId)) {
+                if ((event.flag & net::DamageByViewer) != 0 && isTargetDummy(event.netId)) {
                     dummyDamage_[event.netId].emplace_back(nowSeconds_, event.amount);
                 }
                 if (!options.damageNumbers) break;
@@ -2769,8 +2770,9 @@ void WorldRenderer::drawMobLabel(Canvas& canvas, const Camera& camera, const Mob
     }
     canvas.restore();
 
-    // The dummy is the one mob that reports what it is being hit for, and it
-    // reports a zero rather than disappearing when nothing is hitting it.
+    // The dummy is the one mob that reports what it is being hit for -- by
+    // this viewer -- and it reports a zero rather than disappearing when
+    // nothing is hitting it.
     if (config && config->id == "target_dummy") {
         double total = 0;
         const auto damage = dummyDamage_.find(mob.netId);

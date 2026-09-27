@@ -545,8 +545,8 @@ bool OraclePanel::render(MenuContext& ctx) {
         tile.rarity = cell.rarity;
         tile.hovered = hovered == static_cast<int>(i);
         tile.greyed = !affordable;
-        tile.badge = waiting ? "x" + std::to_string(cell.count)
-                             : std::to_string(cell.count) + "/" + std::to_string(price);
+        tile.badge = waiting ? "x" + stackCountText(cell.count)
+                             : stackCountText(cell.count) + "/" + std::to_string(price);
         tile.badgeCentred = true;
         tile.timeSeconds = now;
         drawItemTile(canvas, ctx.sprites, rect, tile);

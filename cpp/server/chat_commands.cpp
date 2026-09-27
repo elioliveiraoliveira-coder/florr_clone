@@ -28,6 +28,7 @@
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -47,17 +48,22 @@ namespace flix {
 namespace {
 
 /// Parses a decimal integer, whole-token. Returns false on anything with
-/// trailing rubbish, so `spawn bee rare 10x` is a diagnostic rather than ten.
+/// trailing rubbish, so `spawn bee rare 10x` is a diagnostic rather than ten,
+/// and on anything outside an int, which a narrowing cast would wrap into a
+/// different number entirely (4294967297 is 1).
 bool parseInteger(const std::string& text, int& out) {
     if (text.empty()) return false;
     std::size_t used = 0;
-    long value = 0;
+    long long value = 0;
     try {
-        value = std::stol(text, &used);
+        value = std::stoll(text, &used);
     } catch (...) {
         return false;
     }
     if (used != text.size()) return false;
+    if (value < std::numeric_limits<int>::min() || value > std::numeric_limits<int>::max()) {
+        return false;
+    }
     out = static_cast<int>(value);
     return true;
 }
@@ -744,7 +750,8 @@ bool GameServer::handleChatCommand(Session& session, net::Connection& connection
                     "(each biome's unique/apex cooldown), squads (who the "
                     "loot rule pools), spawn &lt;mobType&gt; &lt;rarity&gt; "
                     "[x] [y] [amount] [stack|unstack], spawn_npc &lt;mobType&gt; [rarity] "
-                    "(an NPC where you stand), clear_npcs, killall (kill all wild "
+                    "[players|hostile|neutral] (any mob, as an NPC where you stand), "
+                    "clear_npcs, killall (kill all wild "
                     "mobs), teleport "
                     "&lt;playerId/username&gt; &lt;x&gt; &lt;y&gt;, teleport_all &lt;x&gt; "
                     "&lt;y&gt; (move every player and bot), teleport_bots &lt;x&gt; &lt;y&gt; "
@@ -1515,11 +1522,16 @@ void GameServer::runAdminCommand(Session& session, net::Connection& connection,
 
     if (verb == "spawn_npc") {
         // The NPC half of a creature `spawn` makes an enemy of: the same
-        // mobs.json entry, standing on the side its `npc` block names and
-        // offering its service, where the admin is standing. For the places a
-        // map cannot put one -- the maze and the arena are generated -- and
-        // for trying an NPC out before drawing it into a map. Not persisted:
-        // the maps are where a permanent one belongs.
+        // mobs.json entry, standing still (or cruising, if it flies like a
+        // bee) with a pool that never moves, where the admin is standing. ANY
+        // mob: one with an `npc` block stands on the side it names and offers
+        // its service, one without stands as an empty block would have it, on
+        // the players' side offering nothing -- and a side typed after the
+        // name overrides either, which is how any creature becomes a dummy to
+        // test a build on. For the places a map cannot put one -- the maze and
+        // the arena are generated -- and for trying an NPC out before drawing
+        // it into a map. Not persisted: the maps are where a permanent one
+        // belongs.
         if (words.size() < 2) {
             std::string npcTypes;
             for (std::size_t i = 0; i < content().mobCount(); ++i) {
@@ -1528,9 +1540,11 @@ void GameServer::runAdminCommand(Session& session, net::Connection& connection,
                 if (!npcTypes.empty()) npcTypes += ", ";
                 npcTypes += mob.id;
             }
-            out("Usage: spawn_npc <mobType> [rarity]");
-            out("  Places an NPC where you stand. `spawn` makes the same mob a wild enemy.");
-            out("Mobs that can be NPCs: " + (npcTypes.empty() ? std::string("none") : npcTypes));
+            out("Usage: spawn_npc <mobType> [rarity] [players|hostile|neutral]");
+            out("  Places any mob as an NPC where you stand. `spawn` makes it a wild enemy.");
+            out("  The side defaults to the mob's `npc` block, else players (can't be hit).");
+            out("Mobs with an `npc` block: " +
+                (npcTypes.empty() ? std::string("none") : npcTypes));
             return;
         }
         const std::uint16_t mobIndex = content().mobIndex(words[1]);
@@ -1538,15 +1552,19 @@ void GameServer::runAdminCommand(Session& session, net::Connection& connection,
             out("Unknown mob type \"" + words[1] + "\".");
             return;
         }
-        if (!content().mob(mobIndex).npc.present) {
-            out(words[1] + " is not an NPC (mobs.json gives it no `npc` block). Use spawn to "
-                "put one down as a mob.");
-            return;
-        }
+        // The tier and the side, in either order: each word is one or the
+        // other, and a word that is neither is a typo worth saying so about.
         Rarity rarity = Rarity::Common;
-        if (words.size() >= 3 && !parseRarityStrict(words[2], rarity)) {
-            out("Invalid rarity \"" + words[2] + "\".");
-            return;
+        std::optional<Team> side;
+        for (std::size_t i = 2; i < words.size(); ++i) {
+            const std::string& word = words[i];
+            if (word == "players") side = Team::Players;
+            else if (word == "hostile") side = Team::Hostiles;
+            else if (word == "neutral") side = Team::Neutral;
+            else if (!parseRarityStrict(word, rarity)) {
+                out("\"" + word + "\" is neither a rarity nor a side (players, hostile, neutral).");
+                return;
+            }
         }
         const Transform* mine = session.playing() && world_.isAlive(session.entity)
                                     ? world_.tryGet<Transform>(session.entity)
@@ -1558,9 +1576,17 @@ void GameServer::runAdminCommand(Session& session, net::Connection& connection,
         // Copied out: the spawn's create relocates rows under the pointer.
         const Vec2 at = mine->position;
         const Realm realm = mine->realm;
-        npcs_->spawnNpc(world_, *terrain_, content(), mobIndex, rarity, at, realm, clockMillis_);
-        out("Placed a " + std::string(rarityName(rarity)) + " " + words[1] +
-            " NPC at your location");
+        const Entity npc = npcs_->spawnNpc(world_, *terrain_, content(), mobIndex, rarity, at,
+                                           realm, clockMillis_, side);
+        // Read back rather than echoed: the mob's own floor may have raised
+        // the tier, and the side may have come from its `npc` block.
+        const Rarity placed = world_.isAlive(npc) ? world_.get<Npc>(npc).rarity : rarity;
+        const Team team = world_.isAlive(npc) ? world_.get<Faction>(npc).team : Team::Players;
+        const char* sideName = team == Team::Players  ? "players'"
+                             : team == Team::Hostiles ? "hostile"
+                                                      : "neutral";
+        out("Placed a " + std::string(rarityName(placed)) + " " + words[1] + " NPC (" +
+            sideName + " side) at your location");
         return;
     }
 
@@ -1782,7 +1808,8 @@ void GameServer::runAdminCommand(Session& session, net::Connection& connection,
         }
         int amount = 1;
         if (words.size() == 5 && (!parseInteger(words[4], amount) || amount < 1)) {
-            out("Invalid amount \"" + words[4] + "\". Amount must be a positive whole number.");
+            out("Invalid amount \"" + words[4] + "\". Amount must be a whole number from 1 to " +
+                std::to_string(kMaxStackCount) + ".");
             return;
         }
         const std::string itemType = lowerCase(words[2]);

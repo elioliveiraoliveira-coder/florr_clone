@@ -598,4 +598,23 @@ void drawItemTile(Canvas& canvas, const SpriteCache& sprites, Rect rect, const I
     canvas.restore();
 }
 
+std::string stackCountText(std::uint64_t count) {
+    if (count < 10000) return std::to_string(count);
+    const std::uint64_t unit = count < 1000000 ? 1000 : count < 1000000000 ? 1000000 : 1000000000;
+    const char suffix = unit == 1000 ? 'K' : unit == 1000000 ? 'M' : 'B';
+    // Integer tenths rather than a printf of a double, which rounds to
+    // nearest and would call 99,999 "100K". A decimal only while the whole
+    // part is under three digits: "456.7K" is wider than the "9999" it
+    // follows, and the tenth is not news by then.
+    const std::uint64_t tenths = count / (unit / 10);
+    std::string out;
+    if (tenths < 1000) {
+        out = std::to_string(tenths / 10);
+        if (tenths % 10 != 0) out += "." + std::to_string(tenths % 10);
+    } else {
+        out = std::to_string(count / unit);
+    }
+    return out + suffix;
+}
+
 } // namespace flix::ui

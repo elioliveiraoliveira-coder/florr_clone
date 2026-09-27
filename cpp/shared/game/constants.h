@@ -154,7 +154,9 @@ inline constexpr double kBounceDamping = 0.7;
 
 inline constexpr double kBaseXpRequirement = 100.0;
 inline constexpr double kXpGrowth = 1.08;
-inline constexpr double kHealthPerLevel = 10.0;
+inline constexpr double kLevelOneHealth = 110.0;
+inline constexpr int kHealthAnchorLevel = 130;
+inline constexpr double kHealthAtAnchorLevel = 30000.0;
 inline constexpr double kDamagePerLevel = 1.0;
 inline constexpr int kMaxLevel = 500;
 
@@ -189,9 +191,14 @@ inline LevelProgress levelFromTotalXp(double totalXp) {
     return out;
 }
 
+/// Linear: a level-1 flower keeps its 110, and the line runs through
+/// kHealthAtAnchorLevel at kHealthAnchorLevel, carrying on at the same slope
+/// past it. Rounded so a pool is always a whole number.
 inline double maxHealthForLevel(int level) {
     const double l = static_cast<double>(std::max(1, level));
-    return kPlayerBaseHealth + std::ceil(std::pow(l, 1.5) * kHealthPerLevel);
+    const double perLevel = (kHealthAtAnchorLevel - kLevelOneHealth) /
+                            static_cast<double>(kHealthAnchorLevel - 1);
+    return std::round(kLevelOneHealth + (l - 1.0) * perLevel);
 }
 
 inline double bodyDamageForLevel(int level) {
@@ -219,6 +226,12 @@ inline constexpr int kLoadoutSlots = 20;
 /// (`PRIMARY_LOADOUT_SLOTS`, src/server/shared/playerModifiers.ts:36); a ring
 /// built from all twenty would give a second row of petals for free.
 inline constexpr int kLoadoutActiveSlots = 10;
+
+/// The most of one petal at one tier an account can hold: a stack is an
+/// `int` on every path it takes, and the wire carries it in a u32. Anything
+/// added past this is dropped rather than wrapped -- a wrapped stack goes
+/// negative, and a negative stack is erased as empty.
+inline constexpr int kMaxStackCount = 2147483647;
 
 /// Saved loadouts: two banks, K and L, of ten each, one per number key. A
 /// preset is numbered `bank * kLoadoutPresetsPerBank + column`, where column

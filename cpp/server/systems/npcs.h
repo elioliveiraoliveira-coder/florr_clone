@@ -97,14 +97,17 @@ public:
     void run(World& world, const Terrain& terrain, const ContentRegistry& content,
              const std::vector<RealmPoint>& players, double nowMillis);
 
-    /// Puts one friendly NPC into the world: the mob `mobIndex` at `rarity`,
-    /// standing at `at` (pushed clear of any wall its body would overlap). The
-    /// one path an NPC comes from -- a site, and the admin console's
-    /// `spawn_npc`, both go through here. NULL_ENTITY for a mob index the
-    /// content does not have.
+    /// Puts one NPC into the world: the mob `mobIndex` at `rarity`, standing
+    /// at `at` (pushed clear of any wall its body would overlap), on the side
+    /// its mob's `npc` block names -- or on `side`, when the caller gives one.
+    /// The one path an NPC comes from -- a site, and the admin console's
+    /// `spawn_npc`, both go through here. Any mob will do: one with no `npc`
+    /// block stands as an empty block would have it, on the players' side
+    /// offering nothing. NULL_ENTITY for a mob index the content does not
+    /// have.
     Entity spawnNpc(World& world, const Terrain& terrain, const ContentRegistry& content,
                     std::uint16_t mobIndex, Rarity rarity, Vec2 at, Realm realm,
-                    double nowMillis);
+                    double nowMillis, std::optional<Team> side = std::nullopt);
 
     /// The nearest NPC offering `service` whose SKIN is within `reach` of
     /// `at`, in `realm`; NULL_ENTITY when there is none. The reach is measured

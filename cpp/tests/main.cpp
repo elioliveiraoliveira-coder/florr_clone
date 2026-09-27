@@ -496,7 +496,11 @@ TEST(derived_player_stats_follow_the_typescript_level_curve) {
     CHECK_NEAR(maxHealthForLevel(1), 110.0, 1e-9);
     CHECK_NEAR(bodyDamageForLevel(1), 6.0, 1e-9);
     CHECK(maxHealthForLevel(30) > maxHealthForLevel(29));
-    CHECK_NEAR(maxHealthForLevel(30), 1744.0, 1e-9);
+    CHECK_NEAR(maxHealthForLevel(130), 30000.0, 1e-9);
+    // Linear: every level adds the same amount.
+    CHECK_NEAR(maxHealthForLevel(30) - maxHealthForLevel(29),
+               maxHealthForLevel(100) - maxHealthForLevel(99), 1.0);
+    CHECK_NEAR(maxHealthForLevel(30), 6829.0, 1e-9);
     CHECK_NEAR(bodyDamageForLevel(30), 170.0, 1e-9);
     // Level changes health and damage; collision size comes only from petals.
     CHECK_NEAR(playerRadiusForLevel(100), kPlayerBaseRadius, 1e-9);

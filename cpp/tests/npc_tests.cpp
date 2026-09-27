@@ -86,6 +86,33 @@ Entity npcWearing(World& world, const char* id) {
 
 Entity onlyPlayer(World& world);
 
+/// Steps until every petal `flower` has equipped is out. A new flower's ring
+/// arrives a couple of seconds after it does, and a test that starts counting
+/// hits before then is counting the wait.
+bool awaitRing(Harness& h, const std::vector<NetClient*>& clients, World& world, Entity flower) {
+    return h.stepUntil(clients, [&] {
+        const Loadout& loadout = world.get<Loadout>(flower);
+        std::size_t equipped = 0;
+        for (const LoadoutSlot& slot : loadout.slots) equipped += slot.empty() ? 0 : 1;
+        return equipped > 0 && loadout.spawned.size() >= equipped;
+    }, 200);
+}
+
+/// One full turn of the ring and a little over: every petal passes a given
+/// point once, which is as many hits as a ring of petals that each break on
+/// their first touch can land.
+constexpr int kOneRingTurnTicks = static_cast<int>(kTau / kPetalSpinRate * net::kTicksPerSecond) + 15;
+
+/// Where `flower` stands to sweep its ring through `npc` without touching it:
+/// just off the NPC's skin, on its west side. The ring orbits wider than the
+/// flower's own body, so from here the petals pass through the NPC while the
+/// body stays clear of a hostile one's bite -- a flower parked on the ring's
+/// own radius is flush against the dummy, and is bitten to death in seconds.
+Vec2 ringOnly(World& world, Entity npc, Entity flower) {
+    const double standoff = world.get<Body>(npc).radius + world.get<Body>(flower).radius + 8.0;
+    return world.get<Transform>(npc).position - Vec2{standoff, 0.0};
+}
+
 /// Stands the one flower just clear of the NPC wearing `id`, wherever its
 /// cruise has taken it, and lets a tick pass so the server has it there. The
 /// oracle does not hold still any more, so "at the oracle" is a place that has
@@ -287,6 +314,60 @@ TEST(a_site_that_names_no_npc_is_reported_and_left_empty) {
         CHECK_EQ(npcs.sites()[0].mobIndex, content().mobIndex("oracle"));
     }
     removeDataDir(dir);
+}
+
+TEST(an_npc_object_classed_with_its_layers_name_is_read) {
+    CHECK(ensureShippedContent());
+    // "npcs" on the "npcs" layer is what the jungle's author typed, and every
+    // dummy on it was dropped for not saying "npc". The layer's name is as
+    // plain a statement of kind as the singular; another layer's kind is not.
+    std::string layerNamed = fixtureNpc(700.0, 900.0, "target_dummy", "rare");
+    std::string otherKind = fixtureNpc(300.0, 300.0, "oracle", "common");
+    const std::string npcClass = "\"type\": \"npc\"";
+    layerNamed.replace(layerNamed.find(npcClass), npcClass.size(), "\"type\": \"npcs\"");
+    otherKind.replace(otherKind.find(npcClass), npcClass.size(), "\"type\": \"spawn\"");
+    const std::string dir = npcWorld("npc-layer-class", layerNamed + "," + otherKind);
+    if (dir.empty()) { CHECK(false); return; }
+    MapData map;
+    std::string error;
+    CHECK(map.loadTiled(dir + "/meadow.tmj", error));
+    int npcs = 0;
+    for (const MapElement& element : map.elements()) {
+        if (element.kind != MapElementKind::Npc) continue;
+        ++npcs;
+        CHECK_EQ(element.npcId, std::string("target_dummy"));
+        CHECK(element.npcRarity == Rarity::Rare);
+    }
+    CHECK_EQ(npcs, 1);
+    removeDataDir(dir);
+}
+
+TEST(the_shipped_jungle_stands_its_target_dummies) {
+    CHECK(ensureShippedContent());
+    WorldMaps maps;
+    Terrain terrain;
+    std::string error;
+    CHECK(maps.load(dataDir(), &terrain, error));
+    Realm jungle = Realm::Overworld;
+    bool found = false;
+    for (std::size_t slot = 0; slot < maps.maps().size(); ++slot) {
+        if (maps.maps()[slot].id() != "jungle") continue;
+        jungle = maps.maps()[slot].realm();
+        found = true;
+    }
+    CHECK(found);
+    NpcSystem npcs;
+    std::vector<std::string> warnings;
+    npcs.loadSites(maps, content(), warnings);
+    int dummies = 0;
+    for (const NpcSystem::Site& site : npcs.sites()) {
+        if (site.realm != jungle || site.mobIndex != content().mobIndex("target_dummy")) continue;
+        ++dummies;
+    }
+    // One plot per tier, common to apex. Whatever the count becomes, zero is
+    // the bug: a whole layer dropped on the class of its objects.
+    CHECK(dummies > 0);
+    CHECK_EQ(dummies, kRarityCount);
 }
 
 TEST(the_shipped_garden_has_an_oracle_on_open_ground) {
@@ -538,12 +619,13 @@ TEST(a_hostile_npc_takes_every_hit_and_a_friendly_one_refuses_them) {
     const double dummyMax = world.get<Health>(dummy).max;
     const double oracleMax = world.get<Health>(oracle).max;
 
-    // Each NPC in turn sits on the ring's own orbit, so the five petals sweep
+    // Each NPC in turn sits on the ring's orbit, so the five petals sweep
     // straight through it.
-    const auto standBeside = [&](double npcX) {
+    CHECK(awaitRing(h, {&client}, world, player));
+    const auto standBeside = [&](Entity npc) {
         client.view().events().clear();
-        for (int i = 0; i < 90; ++i) {
-            world.get<Transform>(player).position = Vec2{npcX - kPetalOrbitRestRadius, y};
+        for (int i = 0; i < kOneRingTurnTicks; ++i) {
+            world.get<Transform>(player).position = ringOnly(world, npc, player);
             h.step(1, {&client});
         }
     };
@@ -557,16 +639,141 @@ TEST(a_hostile_npc_takes_every_hit_and_a_friendly_one_refuses_them) {
         return count;
     };
 
-    standBeside(dummyX);
+    standBeside(dummy);
     CHECK(numbered(dummyId) > 3);
     CHECK(world.get<Health>(dummy).flashUntilMillis > 0.0);
     CHECK_NEAR(world.get<Health>(dummy).current, dummyMax, 1e-9);
     CHECK(!world.has<Dead>(dummy));
 
-    standBeside(oracleX);
+    standBeside(oracle);
     CHECK_EQ(numbered(oracleId), 0);
     CHECK_EQ(world.get<Health>(oracle).flashUntilMillis, 0.0);
     CHECK_NEAR(world.get<Health>(oracle).current, oracleMax, 1e-9);
+    removeDataDir(dir);
+}
+
+TEST(a_hostile_npc_bites_the_flower_touching_it_and_breaks_the_petals_striking_it) {
+    // The dummy hits back with its mob's body, as the browser build's dummy --
+    // an ordinary mob -- always did: a flower pressed against it is bumped and
+    // bitten, and a ring sweeping through it pays for every hit and breaks.
+    // The oracle beside it, on the players' side, does neither.
+    const double dummyX = kTileSize * 8.0;
+    const double oracleX = kTileSize * 14.0;
+    const double y = kTileSize * 8.0;
+    const std::string dir = npcWorld("npc-bites", fixtureNpc(dummyX, y, "target_dummy", "common") +
+                                                     "," + fixtureNpc(oracleX, y, "oracle", "common"));
+    Harness h("npc-bites", {}, dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+
+    NetClient client;
+    CHECK(loginNew(h, client, "bitten", "password7"));
+    client.joinGame(1920, 1080, {}, "bitten");
+    CHECK(h.stepUntil({&client}, [&] { return client.status() == NetClient::Status::Playing; },
+                      200));
+    h.step(3, {&client});
+    World& world = h.server.world();
+    const Entity dummy = npcWearing(world, "target_dummy");
+    const Entity oracle = npcWearing(world, "oracle");
+    const Entity player = onlyPlayer(world);
+    if (dummy == NULL_ENTITY || oracle == NULL_ENTITY || player == NULL_ENTITY) {
+        CHECK(false);
+        removeDataDir(dir);
+        return;
+    }
+    CHECK(world.has<ContactDamage>(dummy));
+    CHECK(!world.has<ContactDamage>(oracle));
+
+    // The ring on the dummy: some petal breaks.
+    CHECK(awaitRing(h, {&client}, world, player));
+    bool broke = false;
+    for (int i = 0; i < kOneRingTurnTicks && !broke; ++i) {
+        world.get<Transform>(player).position = ringOnly(world, dummy, player);
+        h.step(1, {&client});
+        for (const LoadoutSlot& slot : world.get<Loadout>(player).slots) broke |= slot.broken;
+    }
+    CHECK(broke);
+
+    // The flower against it -- flush, which is as close as it can ever get --
+    // with its spawn shield dropped: bitten, and shoved off.
+    const auto pressAgainst = [&](Entity npc) {
+        // Copied out: the step below may relocate the flower's row.
+        const double max = world.get<Health>(player).max;
+        world.get<Health>(player).current = max;
+        world.get<Health>(player).invulnerableUntilMillis = 0.0;
+        const Vec2 at = world.get<Transform>(npc).position;
+        const double reach = world.get<Body>(npc).radius + world.get<Body>(player).radius;
+        world.get<Transform>(player).position = at - Vec2{reach - 3.0, 0.0};
+        h.step(1, {&client});
+        return max - world.get<Health>(player).current;
+    };
+    const double dummyBite = pressAgainst(dummy);
+    CHECK(dummyBite > 0.0);
+    CHECK(distance(world.get<Transform>(player).position, world.get<Transform>(dummy).position) >
+          world.get<Body>(dummy).radius + world.get<Body>(player).radius + 10.0);
+
+    CHECK_NEAR(pressAgainst(oracle), 0.0, 1e-9);
+    removeDataDir(dir);
+}
+
+TEST(a_dummy_counts_a_hit_as_yours_only_on_your_own_wire) {
+    // Two flowers, one dummy, one of them hitting it. The hitter's snapshots
+    // mark every number on the dummy as theirs; the watcher is sent the same
+    // numbers, none of them marked -- so the watcher's DPS readout stays at
+    // zero while the hitter's climbs.
+    const double dummyX = kTileSize * 8.0;
+    const double y = kTileSize * 8.0;
+    const std::string dir =
+        npcWorld("npc-dps-owner", fixtureNpc(dummyX, y, "target_dummy", "common"));
+    Harness h("npc-dps-owner", {}, dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+
+    NetClient hitter, watcher;
+    CHECK(loginNew(h, hitter, "hitter", "password7"));
+    CHECK(loginNew(h, watcher, "watcher", "password7"));
+    hitter.joinGame(1920, 1080, {}, "hitter");
+    watcher.joinGame(1920, 1080, {}, "watcher");
+    CHECK(h.stepUntil({&hitter, &watcher}, [&] {
+        return hitter.status() == NetClient::Status::Playing &&
+               watcher.status() == NetClient::Status::Playing;
+    }, 200));
+    h.step(3, {&hitter, &watcher});
+    World& world = h.server.world();
+    const Entity dummy = npcWearing(world, "target_dummy");
+    Entity hitterBody = NULL_ENTITY;
+    Entity watcherBody = NULL_ENTITY;
+    Query<PlayerTag, PlayerAccount> bodies{world};
+    bodies.each([&](Entity e, PlayerTag&, PlayerAccount& account) {
+        if (account.username == "hitter") hitterBody = e;
+        if (account.username == "watcher") watcherBody = e;
+    });
+    if (dummy == NULL_ENTITY || hitterBody == NULL_ENTITY || watcherBody == NULL_ENTITY) {
+        CHECK(false);
+        removeDataDir(dir);
+        return;
+    }
+    const std::uint32_t dummyId = world.get<NetId>(dummy).value;
+
+    CHECK(awaitRing(h, {&hitter, &watcher}, world, hitterBody));
+    hitter.view().events().clear();
+    watcher.view().events().clear();
+    for (int i = 0; i < kOneRingTurnTicks; ++i) {
+        world.get<Transform>(hitterBody).position = ringOnly(world, dummy, hitterBody);
+        // Well clear of the dummy and of the hitter's ring, well inside view.
+        world.get<Transform>(watcherBody).position = Vec2{dummyX + 700.0, y};
+        h.step(1, {&hitter, &watcher});
+    }
+    const auto count = [&](NetClient& client, bool mine) {
+        int n = 0;
+        for (const ViewEvent& event : client.view().events()) {
+            if (event.kind != net::EventKind::Damage || event.netId != dummyId) continue;
+            if (((event.flag & net::DamageByViewer) != 0) == mine) ++n;
+        }
+        return n;
+    };
+    CHECK(count(hitter, true) > 3);
+    CHECK_EQ(count(hitter, false), 0);
+    CHECK(count(watcher, false) > 3);
+    CHECK_EQ(count(watcher, true), 0);
     removeDataDir(dir);
 }
 
@@ -679,7 +886,7 @@ TEST(an_npc_the_map_placed_comes_back_and_killall_leaves_it_alone) {
     removeDataDir(dir);
 }
 
-TEST(spawn_makes_the_oracle_an_enemy_and_spawn_npc_a_friend) {
+TEST(spawn_makes_the_oracle_an_enemy_and_spawn_npc_puts_down_any_mob) {
     const std::string dir = oracleWorld("npc-admin");
     Harness h("npc-admin", [](const std::string& path) { seedAccount(path, "boss", true); },
               dir, 0);
@@ -723,10 +930,42 @@ TEST(spawn_makes_the_oracle_an_enemy_and_spawn_npc_a_friend) {
     const Entity dummy = npcWearing(world, "target_dummy");
     CHECK(dummy != NULL_ENTITY && world.get<Faction>(dummy).team == Team::Hostiles);
 
-    // A mob with no `npc` block cannot be one.
+    // ANY mob can be one. A bee has no `npc` block, so it stands as an empty
+    // block would have it: the players' side, offering nothing, touching
+    // nobody.
+    const std::uint16_t bee = content().mobIndex("bee");
+    const auto beeNpc = [&](Team team) {
+        Entity found = NULL_ENTITY;
+        for (const Entity e : npcsIn(world)) {
+            if (world.get<Npc>(e).configIndex == bee && world.get<Faction>(e).team == team) found = e;
+        }
+        return found;
+    };
     client.sendChat("/admin spawn_npc bee");
+    CHECK(h.stepUntil({&client}, [&] { return npcsIn(world).size() == npcsBefore + 3; }, 30));
+    const Entity friendlyBee = beeNpc(Team::Players);
+    CHECK(friendlyBee != NULL_ENTITY);
+    if (friendlyBee != NULL_ENTITY) {
+        CHECK(world.get<Npc>(friendlyBee).service == NpcService::None);
+        CHECK(!world.has<ContactDamage>(friendlyBee));
+    }
+
+    // A side typed after it -- before or after the tier -- overrides that,
+    // and a hostile one bites with its mob's body.
+    client.sendChat("/admin spawn_npc bee hostile rare");
+    CHECK(h.stepUntil({&client}, [&] { return npcsIn(world).size() == npcsBefore + 4; }, 30));
+    const Entity hostileBee = beeNpc(Team::Hostiles);
+    CHECK(hostileBee != NULL_ENTITY);
+    if (hostileBee != NULL_ENTITY) {
+        CHECK(world.get<Npc>(hostileBee).rarity == Rarity::Rare);
+        CHECK(world.has<ContactDamage>(hostileBee));
+        CHECK(!world.has<MobTag>(hostileBee));
+    }
+
+    // A word that is neither a tier nor a side places nothing.
+    client.sendChat("/admin spawn_npc bee sideways");
     h.step(10, {&client});
-    CHECK_EQ(npcsIn(world).size(), npcsBefore + 2);
+    CHECK_EQ(npcsIn(world).size(), npcsBefore + 4);
     removeDataDir(dir);
 }
 

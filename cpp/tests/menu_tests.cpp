@@ -564,6 +564,65 @@ TEST(a_craft_request_is_pooled_and_answered_once) {
     CHECK(!client.craftOutcome().pending);
 }
 
+TEST(a_full_stack_crafts_whole_in_one_request) {
+    // Two ways a deep stack broke the forge. The count went over the wire as a
+    // u16, so shift-staging 65,540 petals asked for 4 -- under one batch, and
+    // refused as "not enough petals". And the pool was rolled one attempt at a
+    // time: a full stack is ~800 million rolls, seconds of frozen tick. The
+    // stack above is seeded just short of full so the upgrades have to stop
+    // at the cap rather than wrap it negative and erase it.
+    Harness h("craft-deep", [](const std::string& path) {
+        seedAccount(path, "smith", "password7", 0, 0);
+        seedStack(path, "smith", "petal_rose", Rarity::Common, kMaxStackCount);
+        seedStack(path, "smith", "petal_rose", Rarity::Uncommon, kMaxStackCount - 10);
+    });
+    if (!h.ready) { CHECK(false); return; }
+
+    const std::uint16_t rose = content().petalIndex("rose");
+    if (rose == kInvalidIndex) { CHECK(false); return; }
+    const auto full = static_cast<std::uint32_t>(kMaxStackCount);
+
+    NetClient client;
+    CHECK(connectClient(h, client));
+    client.requestLogin("smith", "password7");
+    CHECK(h.stepUntil({&client}, [&] { return client.status() == NetClient::Status::LoggedIn; }));
+    CHECK(awaitProfile(h, client, [&](const Profile& p) {
+        return p.stackCount(rose, Rarity::Common) == full;
+    }));
+
+    client.requestCraft(rose, Rarity::Common, kMaxStackCount);
+    CHECK(h.stepUntil({&client}, [&] { return client.craftOutcome().pending; }, 200));
+    const CraftOutcome outcome = client.craftOutcome();
+    client.craftOutcome().pending = false;
+
+    // 64% odds on ~430 million attempts lands about 335 million; anything
+    // like that proves the whole pool was crafted, and past 65,535 proves the
+    // count survived the wire both ways.
+    CHECK(outcome.success);
+    CHECK(outcome.crafted > 300000000);
+    CHECK(outcome.petalsReturned < 5);
+    CHECK(awaitProfile(h, client, [&](const Profile& p) {
+        return p.stackCount(rose, Rarity::Common) ==
+                   static_cast<std::uint32_t>(outcome.petalsReturned) &&
+               p.stackCount(rose, Rarity::Uncommon) == full;
+    }));
+}
+
+TEST(a_stack_badge_stays_short_however_deep_the_stack) {
+    CHECK_EQ(ui::stackCountText(0), std::string("0"));
+    CHECK_EQ(ui::stackCountText(9999), std::string("9999"));
+    CHECK_EQ(ui::stackCountText(10000), std::string("10K"));
+    CHECK_EQ(ui::stackCountText(12345), std::string("12.3K"));
+    // Down, never up: 99,999 is not 100K of anything.
+    CHECK_EQ(ui::stackCountText(99999), std::string("99.9K"));
+    CHECK_EQ(ui::stackCountText(456789), std::string("456K"));
+    CHECK_EQ(ui::stackCountText(999999), std::string("999K"));
+    CHECK_EQ(ui::stackCountText(1000000), std::string("1M"));
+    CHECK_EQ(ui::stackCountText(65540), std::string("65.5K"));
+    CHECK_EQ(ui::stackCountText(static_cast<std::uint64_t>(kMaxStackCount)), std::string("2.1B"));
+    CHECK_EQ(ui::stackCountText(4294967295u), std::string("4.2B"));
+}
+
 TEST(a_super_craft_is_announced_in_chat_and_written_to_the_feed) {
     Harness h("craft-notice", [](const std::string& path) {
         seedAccount(path, "smith", "password7", 0, 0);

@@ -226,6 +226,11 @@ TEST(give_rejects_an_unknown_petal_and_an_unknown_rarity) {
 
     CHECK(say(h, client, "/admin give boss rose notararity"));
     CHECK(sawText(client, "Invalid rarity. Valid rarities:"));
+
+    // Past an int is refused, not narrowed: 4294967297 used to wrap to a give
+    // of exactly one.
+    CHECK(say(h, client, "/admin give boss rose legendary 4294967297"));
+    CHECK(sawText(client, "Invalid amount \"4294967297\""));
 }
 
 TEST(spawn_places_a_mob_and_killall_clears_it) {

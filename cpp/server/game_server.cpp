@@ -13,6 +13,7 @@
 #include <iterator>
 #include <limits>
 #include <optional>
+#include <random>
 #include <thread>
 #include <utility>
 
@@ -94,6 +95,35 @@ bool takeFromInventory(PlayerRecord& record, std::uint16_t petalIndex, Rarity ra
 void giveToInventory(PlayerRecord& record, std::uint16_t petalIndex, Rarity rarity, int count) {
     if (petalIndex == kNoPetal || count <= 0) return;
     record.addItem(rarity, inventoryKey(petalIndex), count);
+}
+
+/// Rng as a standard bit generator, which is all the <random> distributions
+/// ask of one.
+struct RngBits {
+    Rng& rng;
+    using result_type = std::uint64_t;
+    static constexpr result_type min() { return 0; }
+    static constexpr result_type max() { return ~result_type{0}; }
+    result_type operator()() { return rng.next(); }
+};
+
+/// How many of `trials` independent rolls at `chance` come up. Rolled one by
+/// one while that is cheap; past that, one draw from the binomial they add up
+/// to, which is the same number by a different road -- and a single draw
+/// whether the trials are a hundred or four hundred million.
+std::int64_t countSuccesses(Rng& rng, std::int64_t trials, double chance) {
+    if (trials <= 0 || chance <= 0.0) return 0;
+    if (chance >= 1.0) return trials;
+    constexpr std::int64_t kRollOneByOne = 64;
+    if (trials <= kRollOneByOne) {
+        std::int64_t hits = 0;
+        for (std::int64_t i = 0; i < trials; ++i) {
+            if (rng.chance(chance)) ++hits;
+        }
+        return hits;
+    }
+    RngBits bits{rng};
+    return std::binomial_distribution<std::int64_t>(trials, chance)(bits);
 }
 
 /// A loadout slot as a preset remembers it: which petal, at which rarity.
@@ -1364,7 +1394,7 @@ void GameServer::sendProfile(Session& session, net::Connection& connection) {
         const Rarity rarity = parseRarity(rarityName);
         const Json& byType = record.inventory[rarityName];
         for (const std::string& key : byType.keys()) {
-            const std::uint32_t count = static_cast<std::uint32_t>(std::max(0, byType[key].asInt()));
+            const auto count = static_cast<std::uint32_t>(PlayerRecord::stackCount(byType[key]));
             if (count == 0) continue;
             const std::uint16_t index = petalIndexFromInventoryKey(key);
             if (index == kInvalidIndex) continue;
@@ -1871,20 +1901,23 @@ void GameServer::handleLoadLoadoutPreset(Session& session, net::Connection& conn
 void GameServer::handleCraft(Session& session, net::Connection& connection, ByteReader& reader) {
     const std::uint16_t petalIndex = reader.u16();
     const Rarity rarity = clampRarity(reader.u8());
-    const int count = reader.u16();
+    const std::uint32_t count = reader.u32();
     if (!reader.ok() || !session.authenticated()) return;
 
     ByteWriter w;
     w.u8(static_cast<std::uint8_t>(net::ServerMessage::CraftResult));
 
     PlayerRecord& record = liveRecord(session);
-    const bool valid = count >= kCraftBatch && rarity != Rarity::Apex &&
-                       petalIndex < content().petalCount();
-    if (!valid || !takeFromInventory(record, petalIndex, rarity, count)) {
+    // Past kMaxStackCount is more than any stack holds, so it is refused as
+    // short rather than narrowed into a number that might not be.
+    const bool valid = count >= kCraftBatch &&
+                       count <= static_cast<std::uint32_t>(kMaxStackCount) &&
+                       rarity != Rarity::Apex && petalIndex < content().petalCount();
+    if (!valid || !takeFromInventory(record, petalIndex, rarity, static_cast<int>(count))) {
         w.boolean(false);
         w.u16(petalIndex);
         w.u8(static_cast<std::uint8_t>(rarity));
-        w.u16(0);
+        w.u32(0);
         w.u8(0);
         w.str("Not enough petals to craft.");
         connection.send(w);
@@ -1918,27 +1951,44 @@ void GameServer::handleCraft(Session& session, net::Connection& connection, Byte
     }
     const double chance =
         std::min(1.0, craftSuccessChance(rarity) + kCloverCraftBonus * clovers);
-    int pool = count;
-    int crafted = 0;
+
+    // Rolled a ROUND at a time rather than an attempt at a time. Every attempt
+    // costs at most five, so pool/5 attempts in a row are all affordable
+    // however the earlier ones land -- which makes a round exactly that many
+    // attempts, and only its totals matter. A failure keeps one to four of its
+    // five evenly: a cost of 1 plus two fair bits (0..3), so `losses` failures
+    // cost `losses`, plus twice one coin count, plus another. The same
+    // distribution as rolling them singly, in a few dozen rounds rather than
+    // the ~800 million single rolls a full stack would take -- which, on the
+    // tick thread, was seconds of frozen server.
+    std::int64_t pool = count;
+    std::int64_t crafted = 0;
     while (pool >= kCraftBatch) {
-        pool -= kCraftBatch;
-        if (rng_.chance(chance)) ++crafted;
-        else pool += kCraftBatch - static_cast<int>(1 + rng_.below(kCraftBatch - 1));
+        const std::int64_t attempts = pool / kCraftBatch;
+        const std::int64_t wins = countSuccesses(rng_, attempts, chance);
+        const std::int64_t losses = attempts - wins;
+        const std::int64_t lost = losses + 2 * countSuccesses(rng_, losses, 0.5) +
+                                  countSuccesses(rng_, losses, 0.5);
+        pool -= wins * kCraftBatch + lost;
+        crafted += wins;
     }
-    const int petalsReturned = pool;   // the sub-batch tail, 0..4
+    // The sub-batch tail, 0..4, and at most a fifth of the request crafted:
+    // both back inside an int.
+    const int petalsReturned = static_cast<int>(pool);
+    const int upgrades = static_cast<int>(crafted);
 
     if (petalsReturned > 0) giveToInventory(record, petalIndex, rarity, petalsReturned);
-    if (crafted > 0) giveToInventory(record, petalIndex, upgradeRarity(rarity), crafted);
+    if (upgrades > 0) giveToInventory(record, petalIndex, upgradeRarity(rarity), upgrades);
     database_.markDirty();
 
-    if (crafted > 0) announceRareCraft(session, petalIndex, upgradeRarity(rarity));
+    if (upgrades > 0) announceRareCraft(session, petalIndex, upgradeRarity(rarity));
 
-    w.boolean(crafted > 0);
+    w.boolean(upgrades > 0);
     w.u16(petalIndex);
-    w.u8(static_cast<std::uint8_t>(crafted > 0 ? upgradeRarity(rarity) : rarity));
-    w.u16(static_cast<std::uint16_t>(crafted));
+    w.u8(static_cast<std::uint8_t>(upgrades > 0 ? upgradeRarity(rarity) : rarity));
+    w.u32(static_cast<std::uint32_t>(upgrades));
     w.u8(static_cast<std::uint8_t>(petalsReturned));
-    w.str(crafted > 0 ? "" : "The craft failed.");
+    w.str(upgrades > 0 ? "" : "The craft failed.");
     connection.send(w);
     sendProfile(session, connection);
 }
@@ -4403,7 +4453,7 @@ void GameServer::endArenaRun(Session& session) {
         const Json& byType = bag[rarityName];
         for (const std::string& key : byType.keys()) {
             const int kept = static_cast<int>(
-                std::floor(std::max(0, byType[key].asInt()) * kArenaInventoryKeepRatio));
+                std::floor(PlayerRecord::stackCount(byType[key]) * kArenaInventoryKeepRatio));
             if (kept <= 0) continue;
             account.addItem(rarity, key, kept);
         }
@@ -4428,7 +4478,7 @@ void GameServer::settleArenaDeath(Session& victim, Entity killer) {
             const Rarity rarity = parseRarity(rarityName);
             const Json& byType = bag[rarityName];
             for (const std::string& key : byType.keys()) {
-                const int count = std::max(0, byType[key].asInt());
+                const int count = PlayerRecord::stackCount(byType[key]);
                 if (count > 0) winner->arena->addItem(rarity, key, count);
             }
         }

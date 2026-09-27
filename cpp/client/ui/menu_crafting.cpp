@@ -132,6 +132,14 @@ bool knownPetal(std::uint16_t petalIndex) {
     return petalIndex != kNoPetal && petalIndex < content().petalCount();
 }
 
+/// A stack as the staging math counts it. The wire carries a u32 but no stack
+/// is deeper than kMaxStackCount, and a count past it cast straight to int
+/// would stage a negative number of batches.
+int ownedCount(const Profile& profile, std::uint16_t petalIndex, Rarity rarity) {
+    return static_cast<int>(std::min<std::uint32_t>(profile.stackCount(petalIndex, rarity),
+                                                    static_cast<std::uint32_t>(kMaxStackCount)));
+}
+
 /// Clovers raise the roll, so they have to raise the number the panel prints
 /// or the two disagree in front of the player.
 double cloverBonus(const Profile& profile, Rarity rarity) {
@@ -162,8 +170,7 @@ void CraftingPanel::reset() {
 
 void CraftingPanel::stage(const Profile& profile, std::uint16_t petalIndex, Rarity rarity,
                           bool wholeStack) {
-    const int owned = static_cast<int>(profile.stackCount(petalIndex, rarity));
-    const int possible = owned / kBatch;
+    const int possible = ownedCount(profile, petalIndex, rarity) / kBatch;
     if (possible <= 0 || rarity == Rarity::Apex) return;
 
     if (stagedPetal_ != petalIndex || stagedRarity_ != rarity) {
@@ -221,8 +228,8 @@ bool CraftingPanel::render(MenuContext& ctx) {
     // profile that lands a frame ahead of the result would empty the ring
     // half-way through its own animation.
     if (phase_ != Phase::Spinning && stagedPetal_ != kNoPetal &&
-        static_cast<int>(profile.stackCount(stagedPetal_, stagedRarity_)) < batches_ * kBatch) {
-        batches_ = static_cast<int>(profile.stackCount(stagedPetal_, stagedRarity_)) / kBatch;
+        ownedCount(profile, stagedPetal_, stagedRarity_) / kBatch < batches_) {
+        batches_ = ownedCount(profile, stagedPetal_, stagedRarity_) / kBatch;
         if (batches_ <= 0) stagedPetal_ = kNoPetal;
     }
 
@@ -340,7 +347,7 @@ bool CraftingPanel::render(MenuContext& ctx) {
         // the repetition around the circle is the point, not noise.
         tile.showName = ringPull_ < kNameDropPull;
         if (occupied && phase_ == Phase::Idle && batches_ > 1) {
-            tile.badge = "x" + std::to_string(batches_);
+            tile.badge = "x" + stackCountText(static_cast<std::uint64_t>(batches_));
         }
         tile.timeSeconds = ctx.timeSeconds;
         // The rects are still laid out on a success -- they are what the idle
@@ -362,7 +369,9 @@ bool CraftingPanel::render(MenuContext& ctx) {
         // everywhere else; it used to be a caption slung under the card in the
         // rarity colour, which is a count nothing else in the game wears. A
         // lone petal carries no badge, matching the grid.
-        if (resultCount_ > 1) tile.badge = "x" + std::to_string(resultCount_);
+        if (resultCount_ > 1) {
+            tile.badge = "x" + stackCountText(static_cast<std::uint64_t>(resultCount_));
+        }
         tile.timeSeconds = ctx.timeSeconds;
         drawItemTile(canvas, ctx.sprites, card, tile);
     }
@@ -487,7 +496,7 @@ bool CraftingPanel::render(MenuContext& ctx) {
         tile.hovered = hovered == static_cast<int>(i);
         // A lone petal carries no badge; "x1" is noise on every cell of a fresh
         // account.
-        if (cell.count > 1) tile.badge = "x" + std::to_string(cell.count);
+        if (cell.count > 1) tile.badge = "x" + stackCountText(cell.count);
         tile.timeSeconds = ctx.timeSeconds;
         drawItemTile(canvas, ctx.sprites, rect, tile);
     }

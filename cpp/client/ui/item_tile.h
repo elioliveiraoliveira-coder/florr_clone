@@ -173,6 +173,12 @@ struct ItemTile {
 /// shorter of the rect's sides.
 void drawItemTile(Canvas&, const SpriteCache&, Rect rect, const ItemTile& tile);
 
+/// A stack count as a badge prints it: exact up to four digits, then cut to
+/// K/M/B -- "12.3K", "456K", "2.1B" -- so a stack of billions still fits on
+/// the tile it labels instead of running across its neighbours. Rounded DOWN:
+/// a badge never claims a petal the account does not have.
+std::string stackCountText(std::uint64_t count);
+
 // ---------------------------------------------------------------------------
 // How a drop moves
 // ---------------------------------------------------------------------------

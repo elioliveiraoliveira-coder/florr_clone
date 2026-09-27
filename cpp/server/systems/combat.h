@@ -362,6 +362,10 @@ private:
         /// petal: a piece of the animal's body that happens to be breakable,
         /// so it bumps and is paced exactly as the hull is.
         bool isMobRing = false;
+        /// An NPC off the players' side (only those carry ContactDamage). It
+        /// bumps and bites a flower exactly as a mob body does, but it is not
+        /// a MobTag, so it never takes the pet/wild contact gap.
+        bool isNpcBody = false;
         bool isPet = false;
         bool isPlayerBody = false;
         /// A glitch-family mob body: its touch marks the flower (see

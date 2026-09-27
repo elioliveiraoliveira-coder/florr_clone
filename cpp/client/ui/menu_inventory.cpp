@@ -561,7 +561,7 @@ bool InventoryPanel::render(MenuContext& ctx) {
         tile.rarity = cell.rarity;
         // The badge is how many the ACCOUNT owns; the cluster the tile draws is
         // how many one equipped slot spawns. Two different counts, deliberately.
-        tile.badge = cell.count > 1 ? ("x" + std::to_string(cell.count)) : std::string();
+        tile.badge = cell.count > 1 ? ("x" + stackCountText(cell.count)) : std::string();
         tile.hovered = hovered == static_cast<int>(i);
         tile.timeSeconds = ctx.timeSeconds;
         drawItemTile(canvas, ctx.sprites, rect, tile);

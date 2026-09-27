@@ -327,10 +327,18 @@ Json StoredItem::toJson() const {
 // PlayerRecord
 // ---------------------------------------------------------------------------
 
+int PlayerRecord::stackCount(const Json& stored) {
+    const double count = stored.asDouble(0);
+    // Written so a NaN fails both tests and reads as empty.
+    if (!(count >= 1.0)) return 0;
+    if (!(count < static_cast<double>(kMaxStackCount))) return kMaxStackCount;
+    return static_cast<int>(count);
+}
+
 int PlayerRecord::itemCount(Rarity rarity, const std::string& itemType) const {
     const Json& bucket = inventory[std::string(rarityName(rarity))];
     if (!bucket.isObject()) return 0;
-    return bucket[itemType].asInt(0);
+    return stackCount(bucket[itemType]);
 }
 
 void PlayerRecord::setItemCount(Rarity rarity, const std::string& itemType, int count) {
@@ -350,7 +358,11 @@ void PlayerRecord::setItemCount(Rarity rarity, const std::string& itemType, int 
 }
 
 void PlayerRecord::addItem(Rarity rarity, const std::string& itemType, int delta) {
-    setItemCount(rarity, itemType, itemCount(rarity, itemType) + delta);
+    // Summed wide: a full stack plus one is past int, and the wrapped result
+    // is negative -- which setItemCount reads as "erase the stack".
+    const std::int64_t sum = static_cast<std::int64_t>(itemCount(rarity, itemType)) + delta;
+    setItemCount(rarity, itemType,
+                 static_cast<int>(std::min<std::int64_t>(sum, kMaxStackCount)));
 }
 
 int PlayerRecord::killCount(const std::string& mobType, Rarity rarity) const {
@@ -916,7 +928,7 @@ bool Database::isStarterProgress(const PlayerRecord& record) {
         if (items.keys().size() > 1) return false;
         if (items.keys().size() == 1) {
             const std::string& key = items.keys().front();
-            if (key != "petal_basic" || items[key].asInt(0) != 5) return false;
+            if (key != "petal_basic" || PlayerRecord::stackCount(items[key]) != 5) return false;
         }
     }
 

@@ -588,6 +588,17 @@ void Replicator::build(World& world, Entity viewer, ClientView& view,
     const std::size_t eventCountAt = out.reserveU16();
     std::uint16_t eventCount = 0;
     if (frame.events) {
+        // Which hits are this viewer's own. By connection as well as by body:
+        // a splitter's two halves are one person, and the parked half's ring
+        // is still theirs. A bot's connection is 0, and so matches nobody.
+        const PlayerAccount* viewerAccount = world.tryGet<PlayerAccount>(viewer);
+        const net::ConnectionId viewerConnection =
+            viewerAccount != nullptr ? viewerAccount->connection : 0;
+        const auto dealtByViewer = [&](const WireEvent& event) {
+            if (event.kind != net::EventKind::Damage || event.dealtBy == NULL_ENTITY) return false;
+            return event.dealtBy == viewer ||
+                   (event.dealtByConnection != 0 && event.dealtByConnection == viewerConnection);
+        };
         // Events are cosmetic and one-shot. Scoping them to the same reach as
         // entities keeps a busy fight on the far side of the map from costing
         // every client bytes for numbers they will never see.
@@ -599,7 +610,9 @@ void Replicator::build(World& world, Entity viewer, ClientView& view,
             out.f32(static_cast<float>(event.amount));
             out.position(event.position);
             out.f32(static_cast<float>(event.radius));
-            out.u8(event.flag);
+            out.u8(dealtByViewer(event)
+                       ? static_cast<std::uint8_t>(event.flag | net::DamageByViewer)
+                       : event.flag);
             // The one kind with a tail. Written after the fixed fields, so a
             // reader that has already taken the kind byte knows whether to
             // expect it; nothing else on this wire is variable-length.

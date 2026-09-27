@@ -6,6 +6,7 @@
 #include <limits>
 
 #include "server/loot_eligibility.h"
+#include "shared/game/npc.h"
 
 namespace flix {
 
@@ -704,8 +705,16 @@ DamageResult CombatSystem::applyDamage(World& world, Entity victim, Entity sourc
             // touch alike -- so the cyan is decided once, where the number is
             // reported, rather than at each of the three triggers.
             if (kind == DamageKind::Lightning) flags |= net::DamageLightning;
+            // Whose hit it was, for the one viewer it belongs to (see
+            // net::DamageByViewer). Resolved now, while the source still
+            // exists: a petal that breaks on this very swing is gone by the
+            // time the snapshot is written.
+            const Entity dealer = creditedPlayer(world, source);
+            const PlayerAccount* account =
+                dealer != NULL_ENTITY ? world.tryGet<PlayerAccount>(dealer) : nullptr;
             events_->damage(id->value, applied, transform ? transform->position : Vec2{},
-                            transform ? transform->realm : Realm::Overworld, flags);
+                            transform ? transform->realm : Realm::Overworld, flags, dealer,
+                            account != nullptr ? account->connection : 0);
         }
     }
 
@@ -1580,6 +1589,7 @@ void CombatSystem::gatherContact(World& world, const ContentRegistry& content) {
         source.damage = contact.amount;
         source.hitIntervalMillis = contact.intervalMillis;
         source.isMobBody = world.has<MobTag>(e);
+        source.isNpcBody = world.has<NpcTag>(e);
         source.isPet = world.has<Pet>(e);
         source.isPlayerBody = world.has<PlayerTag>(e);
         // A seed of a mob's ring is a piece of that mob's body, so it hits
@@ -1596,12 +1606,23 @@ void CombatSystem::gatherContact(World& world, const ContentRegistry& content) {
         // displacement; resolveMelee handles that special case directly.
         source.knockback = 0.0;
 
+        // The creature this body is, and at what tier: a mob's own, or the one
+        // an NPC wears -- whose touch carries everything its mob's does.
+        std::uint16_t configIndex = kInvalidIndex;
+        Rarity rarity = Rarity::Common;
         if (const MobType* type = world.tryGet<MobType>(e)) {
-            const MobConfig& config = content.mob(type->configIndex);
-            const MobStats stats = content.mobStats(type->configIndex, type->rarity);
+            configIndex = type->configIndex;
+            rarity = type->rarity;
+        } else if (const Npc* npc = world.tryGet<Npc>(e)) {
+            configIndex = npc->configIndex;
+            rarity = npc->rarity;
+        }
+        if (configIndex != kInvalidIndex) {
+            const MobConfig& config = content.mob(configIndex);
+            const MobStats stats = content.mobStats(configIndex, rarity);
             source.poisonPerSecond = stats.poisonPerSecond;
             source.poisonDurationMillis = stats.poisonDurationMillis;
-            source.rarity = type->rarity;
+            source.rarity = rarity;
             source.glitchInfecting = config.glitchInfecting;
             if (config.lightning.present && config.lightning.onContact) {
                 // Past the BODY. A flower touching this mob has its centre a
@@ -1726,15 +1747,25 @@ void CombatSystem::resolveMelee(World& world, const SpatialGrid& grid, double no
             const bool petPair = source.isMobBody && world.has<MobTag>(victim) &&
                                  source.isPet != world.has<Pet>(victim);
 
+            // A flower and an NPC meet flush, never overlapping: the flower
+            // was put back out against the NPC's skin before this pass ran,
+            // so touching is measured with kNpcTouchSlack on top. Either way
+            // round -- the NPC's bite and the flower's body slam alike.
+            const bool flushPair = (source.isNpcBody && world.has<PlayerTag>(victim)) ||
+                                   (source.isPlayerBody && world.has<NpcTag>(victim));
+
             const Vec2 offset = transform->position - source.position;
             const double reach = source.radius + body->radius +
-                                 (petPair ? kMobCollisionBuffer : 0.0);
+                                 (petPair ? kMobCollisionBuffer : 0.0) +
+                                 (flushPair ? kNpcTouchSlack : 0.0);
             if (offset.lengthSq() > reach * reach) continue;
 
             // A TypeScript mob bump is independent of damage: it still lands
             // during respawn invulnerability, is not throttled by the damage
-            // cooldown, and occurs before a lethal hit is handled.
-            const bool mobTouchesPlayer = (source.isMobBody || source.isMobRing) &&
+            // cooldown, and occurs before a lethal hit is handled. A hostile
+            // NPC's body bumps exactly as its mob's does.
+            const bool mobTouchesPlayer = (source.isMobBody || source.isMobRing ||
+                                           source.isNpcBody) &&
                                           world.has<PlayerTag>(victim) &&
                                           !world.has<Dead>(victim) &&
                                           world.has<Health>(victim) &&
@@ -1879,8 +1910,12 @@ void CombatSystem::resolveMelee(World& world, const SpatialGrid& grid, double no
             // shrugs off the part of the bite its armour covers. The floating
             // number takes care of itself: a petal is on neither of the
             // reference's two damage-report channels.
+            //
+            // A hostile NPC charges it too, at its mob's damage: a dummy that
+            // let a ring hit for free would flatter every build tested on it.
+            // (A players'-side NPC never gets here -- canHit refused it.)
             if (landed && source.isPetal && source.hitIntervalMillis <= 0.0 &&
-                world.has<MobTag>(victim)) {
+                (world.has<MobTag>(victim) || world.has<NpcTag>(victim))) {
                 applyDamage(world, source.attacker, victim, contactDamageOf(world, victim),
                             nowMillis, DamageKind::Recoil);
             }

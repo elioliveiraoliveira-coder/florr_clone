@@ -114,6 +114,14 @@ struct WireEvent {
     double radius = 0;
     std::uint8_t flag = 0;
 
+    /// Damage only, and never on the wire as such: the flower the hit is
+    /// credited to (CombatSystem::creditedPlayer) and its connection, 0 for a
+    /// bot. The replicator turns them into net::DamageByViewer for the one
+    /// viewer they belong to -- by connection as well as by body, so a hit
+    /// from the parked half of a split still reads as the splitter's own.
+    Entity dealtBy = NULL_ENTITY;
+    net::ConnectionId dealtByConnection = 0;
+
     /// Lightning only: where each bolt ends, in world space. Empty for every
     /// other kind, and the only variable-length thing on the event wire.
     std::vector<Vec2> points;
@@ -131,9 +139,12 @@ public:
 
     /// `flags` is a net::DamageEventFlags mask. Poison is called out on the
     /// wire because the client colours and offsets a tick differently from a
-    /// petal hit, and only the server knows which one landed.
+    /// petal hit, and only the server knows which one landed. `dealtBy` and
+    /// `dealtByConnection` name the flower behind the hit, if any; see
+    /// WireEvent::dealtBy.
     void damage(std::uint32_t netId, double amount, Vec2 at, Realm realm,
-                std::uint8_t flags = 0) {
+                std::uint8_t flags = 0, Entity dealtBy = NULL_ENTITY,
+                net::ConnectionId dealtByConnection = 0) {
         WireEvent e;
         e.kind = net::EventKind::Damage;
         e.netId = netId;
@@ -141,6 +152,8 @@ public:
         e.position = at;
         e.realm = realm;
         e.flag = flags;
+        e.dealtBy = dealtBy;
+        e.dealtByConnection = dealtByConnection;
         e.positional = true;
         events_.push_back(e);
     }

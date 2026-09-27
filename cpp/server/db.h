@@ -111,7 +111,14 @@ struct PlayerRecord {
     void setItemCount(Rarity rarity, const std::string& itemType, int count);
     /// Adds `delta` (may be negative). Counts clamp at zero and an entry that
     /// reaches zero is erased, so the inventory does not accumulate rubble.
+    /// They clamp at kMaxStackCount too: what lands on a full stack is lost.
     void addItem(Rarity rarity, const std::string& itemType, int delta);
+
+    /// A stored count as a stack, whatever the file holds: 0 for anything that
+    /// is not a positive number, kMaxStackCount for anything past it. The one
+    /// way a count is read out of `inventory` -- a hand-edited 1e12 cast
+    /// straight to int is undefined, and in practice a negative stack.
+    static int stackCount(const Json& stored);
 
     int killCount(const std::string& mobType, Rarity rarity) const;
     void recordKill(const std::string& mobType, Rarity rarity);

@@ -49,7 +49,7 @@ void NpcSystem::loadSites(const WorldMaps& maps, const ContentRegistry& content,
 
 Entity NpcSystem::spawnNpc(World& world, const Terrain& terrain, const ContentRegistry& content,
                            std::uint16_t mobIndex, Rarity rarity, Vec2 at, Realm realm,
-                           double nowMillis) {
+                           double nowMillis, std::optional<Team> side) {
     if (mobIndex >= content.mobCount()) return NULL_ENTITY;
     const MobConfig& config = content.mob(mobIndex);
     // The mob's own size ladder and floor, exactly as a wild one of the same
@@ -67,7 +67,16 @@ Entity NpcSystem::spawnNpc(World& world, const Terrain& terrain, const ContentRe
     // nothing in particular, which reads as a creature at rest.
     world.add<Transform>(e, Transform{position, kPi * 0.5, realm});
     world.add<Body>(e, Body{radius, stats.mass});
-    world.add<Faction>(e, Faction{config.npc.team, false});
+    const Team team = side.value_or(config.npc.team);
+    world.add<Faction>(e, Faction{team, false});
+    // Off the players' side it is a thing to fight, and it fights back with
+    // its mob's own body: the same bite, at this tier, on the mob's cadence --
+    // what touching a flower costs it and what a petal striking it pays. The
+    // players' own NPCs touch nobody (and canHit refuses them anyway): a mob
+    // wandering through the oracle must not be bitten by it.
+    if (team != Team::Players) {
+        world.add<ContactDamage>(e, ContactDamage{stats.damage, kMobHitIntervalMillis});
+    }
     // The mob's own pool, armour and dodge at this tier, so that an NPC on the
     // other side is hit exactly as its mob would be -- the whole point of a
     // target dummy -- and its plate reads the same pool. The pool never moves:

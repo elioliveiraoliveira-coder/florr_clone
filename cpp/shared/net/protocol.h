@@ -22,7 +22,7 @@ namespace flix::net {
 using ConnectionId = std::uint32_t;
 
 /// Bumped whenever any message layout in this file changes.
-inline constexpr std::uint16_t kProtocolVersion = 37;
+inline constexpr std::uint16_t kProtocolVersion = 39;
 
 /// "Not one of the rotating store's cards": a purchase at the full ladder
 /// price. Any other value is a slot index the server checks against the offers
@@ -70,10 +70,11 @@ enum class ClientMessage : std::uint8_t {
     Input,              ///< see InputFrame
     SetLoadout,         ///< u8 slot, u16 itemType, u8 rarity  (0xFFFF = clear)
     SwapLoadout,        ///< u8 slotA, u8 slotB
-    Craft,              ///< u16 itemType, u8 rarity, u16 count -- the whole
+    Craft,              ///< u16 itemType, u8 rarity, u32 count -- the whole
                         ///< staging area at once, which the server crafts as
-                        ///< one pool. u16 because a shift-craft stages every
-                        ///< petal of a stack and a stack outgrows a byte.
+                        ///< one pool. u32 because a shift-craft stages every
+                        ///< petal of a stack, and a stack runs to
+                        ///< kMaxStackCount; a u16 wrapped a 65,540 stage to 4.
     Chat,               ///< str text
     Respawn,            ///< (empty)
     Ping,               ///< u64 clientTimeMillis
@@ -156,7 +157,7 @@ enum class ServerMessage : std::uint8_t {
                         ///< 0 for anything the server said in its own voice.
     Notice,             ///< u8 severity, str text
     Died,               ///< str killerName, u32 xpLost, u32 survivedTicks
-    CraftResult,        ///< u8 success, u16 itemType, u8 rarity, u16 crafted,
+    CraftResult,        ///< u8 success, u16 itemType, u8 rarity, u32 crafted,
                         ///< u8 petalsReturned, str reason. `crafted` is how
                         ///< many upgrades the pool produced and
                         ///< `petalsReturned` the sub-batch tail (0-4) handed
@@ -559,6 +560,13 @@ enum DamageEventFlags : std::uint8_t {
     /// tick may already have killed. The bit costs nothing -- the byte was
     /// being sent anyway.
     DamageLightning = 1 << 2,
+    /// The flower RECEIVING this snapshot dealt the hit -- its body, its
+    /// petals, its shots, its pets, its poison; either half of a split. Set per
+    /// viewer by the replicator, so the same hit reads as yours on your wire
+    /// and as someone else's on theirs. A target dummy's DPS readout counts
+    /// these and nothing else: it is a measure of YOUR build, and a dummy three
+    /// people are hitting would otherwise report the three of them.
+    DamageByViewer = 1 << 3,
 };
 
 enum class EventKind : std::uint8_t {

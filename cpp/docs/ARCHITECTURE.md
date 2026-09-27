@@ -189,7 +189,14 @@ stands on and what service it offers. That one entry is two creatures:
   tier, and its pool NEVER MOVES — applyDamage lands a hit on it (flash,
   number, DPS) and takes nothing off. On the players' team it refuses every
   hit outright (`CombatSystem::canHit`); on another — the target dummy, on the
-  hostiles' — it takes every hit its side allows. `NpcSystem` keeps every map
+  hostiles' — it takes every hit its side allows, and carries its mob's
+  `ContactDamage`, so its body bumps and bites a flower and a petal striking it
+  pays its recoil, as on the mob. Flower-vs-NPC body contact is measured with
+  `kNpcTouchSlack`, because the flower is always flush, never overlapping. The
+  dummy's DPS readout counts only damage events the replicator marks
+  `net::DamageByViewer` (the viewer's own hits, either split half included).
+  `spawn_npc` takes any mob and an optional side; a map site still needs an
+  `npc` block. `NpcSystem` keeps every map
   site stocked and sets each NPC's facing -- a cruiser's is the step it just
   took, a stander's the nearest flower -- which is all its eye needs. The
   client draws the mob's plate over it, the bar full and in the spawn-shield

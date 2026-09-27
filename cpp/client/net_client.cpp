@@ -401,7 +401,7 @@ void NetClient::requestCraft(std::uint16_t petalIndex, Rarity rarity, int count)
     beginMessage(w, net::ClientMessage::Craft);
     w.u16(petalIndex);
     w.u8(static_cast<std::uint8_t>(rarity));
-    w.u16(static_cast<std::uint16_t>(std::max(0, count)));
+    w.u32(static_cast<std::uint32_t>(std::max(0, count)));
     send(w);
 }
 
@@ -785,7 +785,9 @@ void NetClient::handleCraftResult(ByteReader& reader) {
     outcome.success = reader.boolean();
     outcome.petalIndex = reader.u16();
     outcome.rarity = clampRarity(reader.u8());
-    outcome.crafted = reader.u16();
+    // At most a fifth of a kMaxStackCount pool, so always inside an int.
+    outcome.crafted = static_cast<int>(
+        std::min<std::uint32_t>(reader.u32(), static_cast<std::uint32_t>(kMaxStackCount)));
     outcome.petalsReturned = reader.u8();
     outcome.reason = reader.str();
     if (!reader.ok()) return;

@@ -3,6 +3,7 @@
 #include "server/crypto.h"
 #include "server/db.h"
 #include "shared/core/json.h"
+#include "shared/game/constants.h"
 
 #include <unistd.h>
 
@@ -358,4 +359,33 @@ TEST(a_star_balance_past_32_bits_survives_the_database) {
     if (account) CHECK_EQ(reloaded.progress(account->id).stars, kBalance);
 
     std::remove(path.c_str());
+}
+
+TEST(a_stack_stops_at_the_cap_instead_of_wrapping) {
+    // One past a full stack used to wrap the int negative, and a stack at or
+    // below zero is erased as empty: the pickup that should have been lost
+    // took the whole stack with it.
+    PlayerRecord record;
+    record.addItem(Rarity::Common, "petal_rose", kMaxStackCount - 1);
+    record.addItem(Rarity::Common, "petal_rose", 5);
+    CHECK_EQ(record.itemCount(Rarity::Common, "petal_rose"), kMaxStackCount);
+    record.addItem(Rarity::Common, "petal_rose", kMaxStackCount);
+    CHECK_EQ(record.itemCount(Rarity::Common, "petal_rose"), kMaxStackCount);
+
+    // And spent from the top like any other stack.
+    record.addItem(Rarity::Common, "petal_rose", -(kMaxStackCount - 7));
+    CHECK_EQ(record.itemCount(Rarity::Common, "petal_rose"), 7);
+    record.addItem(Rarity::Common, "petal_rose", -7);
+    CHECK_EQ(record.itemCount(Rarity::Common, "petal_rose"), 0);
+    CHECK(!record.inventory.contains("common"));
+
+    // A count past the cap in the file -- hand-edited, or written by a server
+    // whose JS numbers have no int ceiling -- reads as a full stack rather
+    // than through an out-of-range cast.
+    record.inventory["rare"]["petal_rose"] = Json(1e12);
+    CHECK_EQ(record.itemCount(Rarity::Rare, "petal_rose"), kMaxStackCount);
+    record.inventory["rare"]["petal_rose"] = Json(-3.0);
+    CHECK_EQ(record.itemCount(Rarity::Rare, "petal_rose"), 0);
+    record.inventory["rare"]["petal_rose"] = Json("lots");
+    CHECK_EQ(record.itemCount(Rarity::Rare, "petal_rose"), 0);
 }

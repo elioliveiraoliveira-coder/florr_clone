@@ -353,6 +353,11 @@ The game never sees the grouping beyond the kind: every reader filters by kind
 before it looks at order, so only the order *within* a layer is observable, and
 that is preserved.
 
+An object's **Class** (Tiled's *Class* field; *Type* in older Tiled) may be left
+empty, or set to its kind (`spawn`, `player_spawn`, `teleporter`, `npc`) or to
+its layer's name (`npcs` on the `npcs` layer, say). Any other class is an object
+on the wrong layer: it is skipped, and the load says so on stderr.
+
 ### `spawns` — bands and regions
 
 A `spawn` object answers up to two independent questions, and which properties
@@ -629,7 +634,7 @@ watch the nearest flower. Which side it is on is the mob's business, in its mobs
 | `npc` block | side | what hits it |
 | --- | --- | --- |
 | `{ "service": "oracle" }` | the players' (the default) | nothing — every hit is refused |
-| `{ "team": "hostile" }` | the hostiles' | every hit a flower lands: it flashes, it is numbered and a dummy counts its DPS, and it loses nothing |
+| `{ "team": "hostile" }` | the hostiles' | every hit a flower lands: it flashes, it is numbered and a dummy counts its DPS — each viewer's own hits only — and it loses nothing. It hits back as its mob does: a flower touching it is bumped and bitten, and a petal striking it pays for the hit out of its own health |
 
 The server keeps one standing on every object here — at start-up, and again on
 the next tick if anything removed it. Draw it as a **point** (Tiled's *Insert
@@ -644,8 +649,11 @@ of any flower within reach of it into a guaranteed craft at a fixed price
 and one craft per account every 30 minutes (held in server memory, so a
 restart clears every wait). The same mob is still an
 ordinary enemy to `spawn oracle <rarity>` on the admin console; `spawn_npc
-<npc> [rarity]` stands the NPC where the admin is, which is how the maze and
-the arena — which have no map to draw on — get one.
+<mob> [rarity] [players|hostile|neutral]` stands the NPC where the admin is,
+which is how the maze and the arena — which have no map to draw on — get one.
+The console takes ANY mob, not just one with an `npc` block: the side comes from
+the command when it names one, else from the block, else the players' (what an
+empty block means). A map is stricter, and only places mobs that have a block.
 
 `garden.tmj` places one common oracle just east of its door.
 
