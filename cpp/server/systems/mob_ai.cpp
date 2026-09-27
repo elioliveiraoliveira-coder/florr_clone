@@ -1107,8 +1107,14 @@ bool MobAiSystem::walkHome(World& world, Entity self, const Transform& transform
     const Vec2 home = nest != nullptr ? nest->position : tether->home;
     const Vec2 offset = home - transform.position;
     const double gap = offset.length();
+    // Both distances are measured from the nest's RIM, not its centre. A
+    // size-3 server is 630 units across the radius at ultra, so a leash
+    // measured from the middle lies inside its own body: every escort it
+    // spawned marched straight back into it and could never leave again.
+    const Body* nestBody = world.tryGet<Body>(tether->hole);
+    const double rim = nestBody != nullptr ? nestBody->radius : 0.0;
 
-    if (!tether->returning && gap > kSummonRetreatRadius) {
+    if (!tether->returning && gap > rim + kSummonRetreatRadius) {
         // The target is DROPPED, not merely ignored for the walk: an escort
         // that kept it would turn round and resume the chase the moment it got
         // home, which is the kiting this leash exists to stop.
@@ -1117,7 +1123,7 @@ bool MobAiSystem::walkHome(World& world, Entity self, const Transform& transform
     }
     if (!tether->returning) return false;
 
-    if (gap < kSummonArriveDistance) {
+    if (gap < rim + kSummonArriveDistance) {
         tether->returning = false;
         // Home, and idling from a standing start rather than partway through
         // whatever hop the machine was in when it was dragged away.

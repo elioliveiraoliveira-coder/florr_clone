@@ -3306,6 +3306,43 @@ void WorldRenderer::draw(Canvas& canvas, const EntityMap& entities, const Camera
     timing_ = SectionTiming{};
     double layerStarted = sectionClock();
 
+    // A hole in the ground goes down before every other mob, so the ants it
+    // lets out stand on it rather than under it. gardn draws its holes in a
+    // pass of their own ahead of the mob pass for exactly this; within each
+    // pass the order stays the map's.
+    const auto isHole = [this](std::uint16_t typeIndex) {
+        return content_ != nullptr && content_->mob(typeIndex).hole;
+    };
+    const auto drawLive = [&](const RemoteEntity& entity) {
+        // Every entity draws at its own interpolated position, petals
+        // included: WorldView has already anchored each ring to the
+        // flower its owner is DRAWN at (see RemoteEntity::ownerOffset), so
+        // there is no correction to apply here. Applying one was the petal
+        // shake -- the obvious `owner.position - owner.targetPosition`
+        // fixup subtracts a value that stair-steps at the snapshot rate.
+        Vec2 at = entity.isSelf() ? selfDrawn : entity.position;
+        if (!onScreen(at, entity.radius)) return;
+
+        if (entity.kind == net::EntityKind::Drop) ++timing_.itemCount;
+        drawEntity(canvas, entity, camera, at, timeSeconds);
+        if (options.hitboxes) drawHitbox(canvas, entity, camera, at);
+    };
+    // The mobs the server has already destroyed finish their animation in
+    // the same layer the live ones were drawn in, and take no label: a bar
+    // over a corpse is the browser build's one suppression here.
+    const auto drawDying = [&](const DyingMob& dying) {
+        if (!onScreen(dying.position, dying.radius)) return;
+        MobDraw mob;
+        mob.netId = dying.netId;
+        mob.position = dying.position;
+        mob.angle = dying.angle;
+        mob.radius = dying.radius;
+        mob.typeIndex = dying.typeIndex;
+        mob.rarity = dying.rarity;
+        mob.deathProgress = clamp(dying.ageSeconds / kDeathAnimationSeconds, 0.0, 1.0);
+        drawMobBody(canvas, camera, mob, timeSeconds);
+    };
+
     mobLabels_.clear();
     for (const net::EntityKind kind : kOrder) {
         // A drop's glitter opens the drop layer, so it lies UNDER every drop,
@@ -3319,22 +3356,21 @@ void WorldRenderer::draw(Canvas& canvas, const EntityMap& entities, const Camera
             canvas.setGlobalAlpha(1.0f);
         }
 
+        const bool mobs = kind == net::EntityKind::Mob;
+        if (mobs) {
+            for (const auto& entry : entities) {
+                const RemoteEntity& entity = entry.second;
+                if (entity.kind == kind && isHole(entity.typeIndex)) drawLive(entity);
+            }
+            for (const DyingMob& dying : dying_) {
+                if (isHole(dying.typeIndex)) drawDying(dying);
+            }
+        }
         for (const auto& entry : entities) {
             const RemoteEntity& entity = entry.second;
             if (entity.kind != kind) continue;
-
-            // Every entity draws at its own interpolated position, petals
-            // included: WorldView has already anchored each ring to the
-            // flower its owner is DRAWN at (see RemoteEntity::ownerOffset), so
-            // there is no correction to apply here. Applying one was the petal
-            // shake -- the obvious `owner.position - owner.targetPosition`
-            // fixup subtracts a value that stair-steps at the snapshot rate.
-            Vec2 at = entity.isSelf() ? selfDrawn : entity.position;
-            if (!onScreen(at, entity.radius)) continue;
-
-            if (kind == net::EntityKind::Drop) ++timing_.itemCount;
-            drawEntity(canvas, entity, camera, at, timeSeconds);
-            if (options.hitboxes) drawHitbox(canvas, entity, camera, at);
+            if (mobs && isHole(entity.typeIndex)) continue;
+            drawLive(entity);
         }
         chargeOps(kind == net::EntityKind::Mob || kind == net::EntityKind::Npc ? ops_.mobs
                   : kind == net::EntityKind::Petal      ? ops_.petals
@@ -3380,9 +3416,6 @@ void WorldRenderer::draw(Canvas& canvas, const EntityMap& entities, const Camera
             }
         }
 
-        // The mobs the server has already destroyed finish their animation in
-        // the same layer the live ones were drawn in, and take no label: a bar
-        // over a corpse is the browser build's one suppression here.
         // Layer boundaries, in the draw order kOrder declares. Petals close
         // the mob layer because they are drawn onto the flowers they orbit;
         // splitting them off would report a cost the reference does not.
@@ -3396,18 +3429,9 @@ void WorldRenderer::draw(Canvas& canvas, const EntityMap& entities, const Camera
             else timing_.projectilesMillis += spent;
         }
 
-        if (kind != net::EntityKind::Mob) continue;
+        if (!mobs) continue;
         for (const DyingMob& dying : dying_) {
-            if (!onScreen(dying.position, dying.radius)) continue;
-            MobDraw mob;
-            mob.netId = dying.netId;
-            mob.position = dying.position;
-            mob.angle = dying.angle;
-            mob.radius = dying.radius;
-            mob.typeIndex = dying.typeIndex;
-            mob.rarity = dying.rarity;
-            mob.deathProgress = clamp(dying.ageSeconds / kDeathAnimationSeconds, 0.0, 1.0);
-            drawMobBody(canvas, camera, mob, timeSeconds);
+            if (!isHole(dying.typeIndex)) drawDying(dying);
         }
         chargeOps(ops_.mobs);
         for (const MobDraw& mob : mobLabels_) drawMobLabel(canvas, camera, mob);

@@ -636,6 +636,10 @@ TEST(cross_references_resolve_to_indices) {
         CHECK(!wave.empty());
         for (const std::uint16_t child : wave) CHECK(child < r.mobCount());
     }
+    // Drawn beneath the ants it lets out; nothing else is a hole.
+    CHECK(hole.hole);
+    CHECK(r.mob(r.mobIndex("fire_ant_hole")).hole);
+    CHECK(!r.mob(r.mobIndex("soldier_ant")).hole);
 
     const MobConfig& glitchFlower = r.mob(r.mobIndex("glitch_flower"));
     CHECK(glitchFlower.petalRing.present);

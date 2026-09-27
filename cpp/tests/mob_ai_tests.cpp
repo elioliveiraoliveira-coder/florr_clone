@@ -1201,6 +1201,39 @@ TEST(a_nest_cannot_overshoot_when_several_ticks_flush_at_once) {
     CHECK_EQ(sim.world.get<Spawner>(nest).children.size(), std::size_t(2));
 }
 
+TEST(a_big_nests_escorts_are_leashed_from_its_rim_not_its_centre) {
+    // An ultra server is 630 units in radius. Measured from its centre, the
+    // 600-unit leash lies INSIDE its own body: every glitch it spawned marched
+    // straight back into the middle of it and could never get out again.
+    CHECK(contentReady());
+    Sim sim;
+    const Entity server = sim.spawnMob("server", kOrigin, Rarity::Ultra);
+    sim.brainOf(server).kind = AiKind::Stationary;
+    const double rim = sim.world.get<Body>(server).radius;
+    CHECK(rim > kSummonRetreatRadius);
+
+    // Where the spawner puts an escort: just clear of the body.
+    const Entity glitch = sim.spawnMob("glitch", kOrigin + Vec2{rim + 60.0, 0}, Rarity::Ultra);
+    sim.world.add<HoleTether>(glitch, HoleTether{server, kOrigin, false});
+    const Entity player = sim.spawnPlayer(kOrigin + Vec2{rim + 350.0, 0});
+
+    sim.tick(25);
+    CHECK_EQ(sim.brainOf(glitch).target, player);
+    CHECK(!sim.world.get<HoleTether>(glitch).returning);
+    CHECK(sim.gap(glitch, server) > rim);
+
+    // Dragged well past the leash it still gives up and walks home -- to the
+    // rim, where it can defend from, and not into the middle of the body.
+    sim.world.destroy(player);
+    sim.world.get<Transform>(glitch).position = kOrigin + Vec2{rim + kSummonRetreatRadius + 200.0, 0};
+    sim.tick(1);
+    CHECK(sim.world.get<HoleTether>(glitch).returning);
+    for (int i = 0; i < 500 && sim.world.get<HoleTether>(glitch).returning; ++i) sim.tick(1);
+    CHECK(!sim.world.get<HoleTether>(glitch).returning);
+    CHECK(sim.gap(glitch, server) > rim);
+    CHECK(sim.gap(glitch, server) < rim + kSummonArriveDistance + 20.0);
+}
+
 // ---------------------------------------------------------------------------
 // Robustness
 // ---------------------------------------------------------------------------

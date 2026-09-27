@@ -433,17 +433,22 @@ inline constexpr double kPetViewHalfHeight = kViewportHeight * 0.5;
 /// Extra room beyond the nest's own body when placing an escort.
 inline constexpr double kNestSpawnMargin = 40.0;
 
-/// How far a nest's child may be drawn from its parent before it gives up
-/// whatever it was chasing and marches home.
+/// How far past its parent's RIM a nest's child may be drawn before it gives
+/// up whatever it was chasing and marches home.
 ///
 /// This is the whole reason a hole cannot be stripped of its defenders: with
 /// no leash a player leads the brood away one escort at a time and the nest is
 /// left permanently undefended, which is also how a swarm accumulates
 /// permanent pursuers.
+///
+/// From the rim rather than the centre because nests grow with their tier: an
+/// ultra server is wider than this whole distance, and a leash measured from
+/// its middle kept every escort inside its body.
 inline constexpr double kSummonRetreatRadius = 600.0;
 
-/// Inside this the child counts as home and goes back to idling. Well short of
-/// the retreat radius so an escort does not oscillate across the boundary.
+/// Within this of the parent's rim the child counts as home and goes back to
+/// idling. Well short of the retreat radius so an escort does not oscillate
+/// across the boundary.
 inline constexpr double kSummonArriveDistance = 100.0;
 
 /// Floor under Spawner::intervalMillis. A nest configured with 0 would ask for

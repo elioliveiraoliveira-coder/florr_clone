@@ -170,6 +170,7 @@
         "hideRotation": true,
         "noEggDrop": true,
         "no_mob_collision": true,
+        "hole": true,
         "initial_spawns": [
             "baby_ant",
             "baby_ant",
@@ -249,6 +250,7 @@
         "hideRotation": true,
         "noEggDrop": true,
         "no_mob_collision": true,
+        "hole": true,
         "initial_spawns": [
             "baby_fire_ant",
             "baby_fire_ant",

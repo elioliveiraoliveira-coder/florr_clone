@@ -772,6 +772,7 @@ MobConfig parseMob(Ctx& ctx, const std::string& id, const Json& src,
     m.noEggDrop = ctx.boolean(src, "noEggDrop");
     m.reversed = ctx.boolean(src, "reversed");
     m.noMobCollision = ctx.boolean(src, "no_mob_collision");
+    m.hole = ctx.boolean(src, "hole");
     m.stingerShooter = ctx.boolean(src, "stinger");
     {
         const std::string bee = ctx.text(src, "bee_ai");

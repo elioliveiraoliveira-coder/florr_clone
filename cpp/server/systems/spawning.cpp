@@ -1,5 +1,7 @@
 #include "server/systems/spawning.h"
 
+#include "server/systems/mob_ai.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -61,8 +63,13 @@ bool harmlessOnContact(const MobConfig& config) {
 
 /// Where an escort placed AROUND its nest stands: a bearing of its own,
 /// between `gap` and `gap + anchorRadius` units clear of the nest's body.
+///
+/// Never past the leash, however big the nest: the ring's depth grows with the
+/// body, and an ultra server's would otherwise put a glitch out where its
+/// tether turns it round the moment it first thinks.
 Vec2 escortRingPoint(Vec2 anchor, double anchorRadius, double gap, Rng& rng) {
-    return anchor + Vec2::fromAngle(rng.angle(), anchorRadius + gap + rng.unit() * anchorRadius);
+    const double depth = std::min(anchorRadius, kSummonRetreatRadius - gap);
+    return anchor + Vec2::fromAngle(rng.angle(), anchorRadius + gap + rng.unit() * depth);
 }
 
 /// How far a coordinate may sit from a flower and still BE that flower.

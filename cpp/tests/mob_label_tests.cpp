@@ -258,3 +258,41 @@ TEST(a_summoned_pet_says_so_under_its_bar) {
     neither.healthBars = false;
     CHECK_EQ(inkOf(kPetLabelColor, "ladybug", true, &neither), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Holes
+// ---------------------------------------------------------------------------
+
+TEST(an_ant_standing_on_its_hole_is_drawn_over_it) {
+    // A hole goes down before every other mob, whichever of the two the entity
+    // map happens to hand over first -- so both netId orders are tried. No
+    // sprites: each body is then its tier's flat disc, and the centre pixel
+    // says which of the two went down last.
+    const auto centreOf = [](const std::vector<RemoteEntity>& mobs) {
+        Canvas canvas = Canvas::createVirtual(kFrameSize, kFrameSize);
+        WorldView view;
+        view.setRealm(Realm::Overworld);
+        for (const RemoteEntity& mob : mobs) view.seedForTest(mob);
+        WorldRenderer renderer;
+        renderer.setContent(&shipped());
+        renderer.options.healthBars = false;
+        renderer.options.names = false;
+        renderer.draw(canvas, view, frameCamera(), kMobAt, 0.0);
+        const std::vector<std::uint8_t> pixels = canvas.getImageData(0, 0, kFrameSize, kFrameSize);
+        const std::size_t i = (static_cast<std::size_t>(kFrameSize / 2) * kFrameSize + kFrameSize / 2) * 4;
+        return (std::uint32_t(pixels[i]) << 16) | (std::uint32_t(pixels[i + 1]) << 8) | pixels[i + 2];
+    };
+
+    RemoteEntity hole = mobOfType("ant_hole", Rarity::Common);
+    RemoteEntity ant = mobOfType("baby_ant", Rarity::Rare);
+    const std::uint32_t holeAlone = centreOf({hole});
+    const std::uint32_t antAlone = centreOf({ant});
+    CHECK(holeAlone != antAlone);
+
+    for (const bool holeFirst : {true, false}) {
+        hole.netId = holeFirst ? 1 : 2;
+        ant.netId = holeFirst ? 2 : 1;
+        CHECK_EQ(centreOf({hole, ant}), antAlone);
+        CHECK_EQ(centreOf({ant, hole}), antAlone);
+    }
+}
