@@ -740,7 +740,8 @@ bool GameServer::handleChatCommand(Session& session, net::Connection& connection
             help += "/cmd &lt;command&gt; - Execute server command (alternative)<br/>";
             help += "Available server commands: save, list-players, list-sockets, "
                     "set_max_enemies, set_bot_count &lt;0-" + std::to_string(kMaxBots) +
-                    "|default&gt;, bots (what the bot population is doing), squads (who the "
+                    "|default&gt;, bots (what the bot population is doing), boss_timers "
+                    "(each biome's unique/apex cooldown), squads (who the "
                     "loot rule pools), spawn &lt;mobType&gt; &lt;rarity&gt; "
                     "[x] [y] [amount] [stack|unstack], spawn_npc &lt;mobType&gt; [rarity] "
                     "(an NPC where you stand), clear_npcs, killall (kill all wild "
@@ -1318,6 +1319,33 @@ void GameServer::runAdminCommand(Session& session, net::Connection& connection,
                       std::to_string(perBiome.back());
         }
         if (!spread.empty()) out("By biome: " + spread);
+        return;
+    }
+
+    if (verb == "boss_timers") {
+        // A wild unique or apex is a super its biome's clock upgraded, so
+        // "why has nobody seen a unique" is a question about these clocks.
+        // "ready" means the next super spawned there rolls for the upgrade.
+        const auto wait = [&](double readyMillis) {
+            const double left = readyMillis - clockMillis_;
+            if (left <= 0.0) return std::string("ready");
+            const long seconds = static_cast<long>(std::ceil(left / 1000.0));
+            if (seconds < 3600) {
+                return std::to_string(seconds / 60) + "m " + std::to_string(seconds % 60) + "s";
+            }
+            return std::to_string(seconds / 3600) + "h " + std::to_string(seconds % 3600 / 60) +
+                   "m";
+        };
+        const auto& clocks = spawning_->bossClocks();
+        if (clocks.empty()) {
+            out("No biome clocks yet (the spawner has not run).");
+            return;
+        }
+        for (const SpawnSystem::BiomeBossClock& clock : clocks) {
+            if (!clock.scattered) continue;
+            out(biomeLabel(clock.biome) + ": unique " + wait(clock.uniqueReadyMillis) +
+                ", apex " + wait(clock.apexReadyMillis));
+        }
         return;
     }
 

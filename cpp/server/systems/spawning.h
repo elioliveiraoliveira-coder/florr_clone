@@ -54,6 +54,7 @@
 #include <cstdint>
 #include <optional>
 #include <set>
+#include <string>
 #include <vector>
 
 #include "server/replication.h"
@@ -93,6 +94,11 @@ struct AmbientMob {
     /// mob an operator conjured -- and such a mob is recycled the old way,
     /// destroyed outright, because no band is keeping a slot for it.
     std::uint16_t zone = kInvalidIndex;
+    /// When this mob appeared relative to every other, counting up from one.
+    /// What "the extra one" means when a biome holds two uniques (or two
+    /// apexes): the later of them is the one that goes. A sequence rather
+    /// than a time, because a band stocks dozens in one tick.
+    std::uint64_t spawnOrder = 0;
 };
 
 /// A nest working through the escalating `spawn_waves` list in its config.
@@ -311,10 +317,33 @@ inline constexpr double kTargetMobDensity = 9000.0 / (kWorldSize * kWorldSize);
 /// which a mob is simulated wherever it stands. Supers, uniques and apexes are
 /// events; everything below is scenery.
 ///
-/// There is no boss PASS any more -- bosses come from band difficulty, and a
+/// There is no boss PASS any more -- supers come from band difficulty, and a
 /// difficulty-200 band is full of supers by design -- so this is a property of
 /// the spawn that happened rather than of a scheduler.
 inline constexpr Rarity kAnnouncedRarity = Rarity::Super;
+
+/// The two tiers above super are not band difficulty's to hand out: a band's
+/// roll stops at super, and a wild unique or apex is a super spawn that a
+/// BIOME'S CLOCK upgraded. Each biome keeps one clock per tier, and while a
+/// clock is ready every super that biome spawns has kBossUpgradeChance of
+/// coming out at that tier instead -- which starts the clock again. So these
+/// are the least time between two of one biome's wild uniques (or apexes), not
+/// a schedule: a ready clock waits for the biome's next super, and a biome
+/// nobody is killing anything in spawns no supers to upgrade.
+///
+/// A mob placed any other way -- a console spawn, a nest's escorts -- is not a
+/// band's super and is neither upgraded nor charged to a clock.
+///
+/// A biome holds at most ONE live unique and ONE live apex, however they got
+/// there. A clock whose tier is already standing in its biome does not roll
+/// at all (it stays ready for when that one dies), and if two ever do stand
+/// in one biome -- an operator's spawn on top of a wild one, say -- the one
+/// that appeared later is despawned on the next population pass. Counted per
+/// ANIMAL: a centipede's body segments share its tier and are not more of it,
+/// and a player's pets are not wild at all.
+inline constexpr double kUniqueSpawnCooldownMillis = 20.0 * 60.0 * 1000.0;
+inline constexpr double kApexSpawnCooldownMillis = 2.0 * 60.0 * 60.0 * 1000.0;
+inline constexpr double kBossUpgradeChance = 0.10;
 
 // ---------------------------------------------------------------------------
 // SpawnSystem
@@ -495,6 +524,30 @@ public:
     };
     void latentSites(Realm realm, std::vector<LatentSite>& out) const;
 
+    /// One biome's two boss clocks: the earliest server time a super it spawns
+    /// may be upgraded to a unique, and to an apex. See
+    /// kUniqueSpawnCooldownMillis.
+    ///
+    /// Keyed by the map's `biome`, not by realm, so two maps filed under one
+    /// biome share one clock. The ready times are meaningless until
+    /// `scattered`: a biome's clocks are dealt out on the first pass that sees
+    /// it (scatterBossClocks), because that pass is where the time is known.
+    struct BiomeBossClock {
+        std::string biome;
+        double uniqueReadyMillis = 0;
+        double apexReadyMillis = 0;
+        bool scattered = false;
+    };
+    /// Every staged map's biome, in map order. Mutable so a test or an
+    /// operator can wind a clock on; the list itself is the system's.
+    const std::vector<BiomeBossClock>& bossClocks() const { return bossClocks_; }
+    std::vector<BiomeBossClock>& bossClocks() { return bossClocks_; }
+
+    /// Seeds the stream the boss clocks are scattered and rolled from. Theirs
+    /// alone, so an upgrade roll never moves what the world's own stream hands
+    /// every other spawn.
+    void seedBossClocks(std::uint64_t seed) { bossRng_.reseed(seed); }
+
 private:
     /// One `spawn` shape, its population, and the part of that population that
     /// is not currently a mob.
@@ -541,6 +594,8 @@ private:
         /// than handing the slot back where it fell. See MapElement::singular:
         /// the shape is one creature's range, not a patch of ground.
         bool singular = false;
+        /// Index into bossClocks_: the biome of the map this band is drawn on.
+        std::uint16_t biome = kInvalidIndex;
         /// This band's share of the world that is not simulated. Held HERE
         /// rather than in one flat list because both hot questions are per
         /// band: "is this band worth walking at all" is one rectangle test
@@ -625,6 +680,37 @@ private:
                            Rarity rarity, Vec2 position, Realm realm);
 
     void rebuildZones(const ContentRegistry& content);
+
+    /// The clock slot for `biome`, added unscattered if the biome is new.
+    /// Survives a zone rebuild, so a reload does not reset anybody's wait.
+    std::uint16_t bossClockFor(const std::string& biome);
+
+    /// Deals every not-yet-scattered biome's clocks out over one cooldown,
+    /// evenly spaced in a random order from a random phase, so no two biomes
+    /// come ready together and none is ready the moment the server starts.
+    void scatterBossClocks(double nowMillis);
+
+    /// What a band's SUPER comes out as: the same super, or a unique or an
+    /// apex when its biome's clock for that tier is ready, the biome has none
+    /// of that tier standing, and the upgrade roll lands. Apex is asked first.
+    /// Starts nothing -- the clock is only charged once the upgraded mob is
+    /// actually standing in the world.
+    Rarity rollBossUpgrade(World& world, const SpawnZone& zone, double nowMillis);
+
+    /// What two realms are compared by when the question is "the same biome":
+    /// the biome's clock slot, or the realm itself for a realm no staged map
+    /// claims (a harness with no maps).
+    std::uint32_t biomeKey(Realm realm) const;
+
+    /// True when a live wild `rarity` animal already stands anywhere in
+    /// `realm`'s biome. Walks the live population, which is fine: it is only
+    /// asked when a clock is ready and a super was just rolled.
+    bool topBossTaken(World& world, Rarity rarity, Realm realm);
+
+    /// Despawns every unique or apex that is not the FIRST of its tier in its
+    /// biome, with its body if it has one. Destroyed, not killed: no loot and
+    /// no XP for a mob that should never have been there.
+    void cullExtraTopBosses(World& world, CommandBuffer& commands);
 
     /// The mob a band should place: the band's own distribution when it
     /// declares one, and otherwise whatever `at` would grow anyway -- the
@@ -729,6 +815,26 @@ private:
     /// Names a band asked for that the content defines neither a group nor a
     /// mob for, so each is reported once rather than on every attempt.
     std::set<std::string> unknownZoneMobs_;
+    std::vector<BiomeBossClock> bossClocks_;
+    Rng bossRng_{0xB0551E5C0CC1ull};
+    /// Each realm's slot in bossClocks_, or kInvalidIndex. Rebuilt with the
+    /// zones.
+    std::array<std::uint16_t, kMaxRealms> realmBiome_ = [] {
+        std::array<std::uint16_t, kMaxRealms> slots{};
+        slots.fill(kInvalidIndex);
+        return slots;
+    }();
+    /// The next AmbientMob::spawnOrder handed out.
+    std::uint64_t nextSpawnOrder_ = 1;
+    /// Scratch for cullExtraTopBosses, kept so the pass does not allocate.
+    struct TopBoss {
+        std::uint32_t biome = 0;
+        Rarity rarity = Rarity::Unique;
+        std::uint64_t order = 0;
+        Entity entity = NULL_ENTITY;
+    };
+    std::vector<TopBoss> topBosses_;
+    std::vector<Entity> culled_;
     const WorldMaps* zoneMaps_ = nullptr;
     std::uint32_t zoneContentHash_ = 0;
     /// Starts due, so the first tick stocks the map rather than waiting out an

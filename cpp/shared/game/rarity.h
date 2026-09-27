@@ -89,6 +89,14 @@ inline constexpr bool isBossRarity(Rarity r) {
     return rarityIndex(r) >= rarityIndex(Rarity::Super);
 }
 
+/// The tier a nest's minion comes out at: the tier the nest asks for, held to
+/// ULTRA. A super ant hole or queen ant is the boss; what it sends out is
+/// never a boss of its own, or one super hole would be a stream of super
+/// ants, each announced, each worth a super's loot.
+inline constexpr Rarity minionRarity(Rarity asked) {
+    return rarityIndex(asked) > rarityIndex(Rarity::Ultra) ? Rarity::Ultra : asked;
+}
+
 // ---------------------------------------------------------------------------
 // Stat scaling
 // ---------------------------------------------------------------------------

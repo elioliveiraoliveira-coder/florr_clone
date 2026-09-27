@@ -1897,8 +1897,10 @@ void MobAiSystem::driveSpawners(World& world, const Terrain& terrain, double now
         request.parent = self;
         request.configIndex = nest.childConfigIndex;
         // Offsets are relative to the parent, so a rare queen fields uncommon
-        // soldiers; clamping keeps a hand-edited -9 from wrapping to apex.
-        request.rarity = clampRarity(rarityIndex(type.rarity) + nest.rarityOffset);
+        // soldiers; clamping keeps a hand-edited -9 from wrapping to apex, and
+        // no minion is ever above ultra.
+        request.rarity =
+            minionRarity(clampRarity(rarityIndex(type.rarity) + nest.rarityOffset));
         const Body* body = world.tryGet<Body>(self);
         const double margin = (body != nullptr ? body->radius : 0.0) + kNestSpawnMargin;
         request.position = terrain.findOpenSpawn(rng_, transform.position, margin, transform.realm);

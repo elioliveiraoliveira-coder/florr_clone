@@ -148,6 +148,15 @@ bool zoneInView(const Rect& bounds, Realm realm,
     return false;
 }
 
+/// True when `e` is a whole animal rather than a piece of one: anything
+/// without a body chain, or the head a chain was built from. A centipede's
+/// segments carry its tier, and counting them as more of it would make one
+/// unique centipede a crowd of them.
+bool isWholeAnimal(World& world, Entity e) {
+    const BodySegment* link = world.tryGet<BodySegment>(e);
+    return link == nullptr || link->chainHead == e;
+}
+
 /// Announcements held for a runtime that has not drained them. Two bosses a
 /// minute at the very most, so this is a leak guard rather than a queue depth.
 constexpr std::size_t kMaxPendingBossSpawns = 16;
@@ -438,7 +447,7 @@ Entity SpawnSystem::spawnMobAt(World& world, const Terrain& terrain, const Conte
     ai.nextDecisionMillis = nowMillis;
     world.add<MobAi>(e, std::move(ai));
 
-    world.add<AmbientMob>(e, AmbientMob{nowMillis, zone});
+    world.add<AmbientMob>(e, AmbientMob{nowMillis, zone, nextSpawnOrder_++});
     world.add<Replicated>(e, Replicated{net::EntityKind::Mob, 0, mobIndex, rarity, 0});
     if (netIds != nullptr) world.add<NetId>(e, NetId{netIds->next()});
 
@@ -583,8 +592,11 @@ Entity SpawnSystem::spawnEscort(World& world, const Terrain& terrain, const Cont
                                 std::uint16_t childIndex, Rarity nestRarity, Vec2 at, Realm realm,
                                 Entity parent, double nowMillis, Rng& rng, int depth) {
     if (census_.mobs >= mobCap) return NULL_ENTITY;
-    const Entity child = spawnMobAt(world, terrain, content, childIndex, nestRarity, at, realm,
-                                    nowMillis, rng, depth, kInvalidIndex);
+    // All three paths come through here -- a hole's opening guard, its waves
+    // and a queen's soldiers -- so this is where a minion is held to ultra,
+    // however far above that its nest stands.
+    const Entity child = spawnMobAt(world, terrain, content, childIndex, minionRarity(nestRarity),
+                                    at, realm, nowMillis, rng, depth, kInvalidIndex);
     if (child == NULL_ENTITY || parent == NULL_ENTITY) return child;
 
     // The leash, on all three paths that put a child into the world. Dragged
@@ -609,6 +621,7 @@ void SpawnSystem::run(World& world, const Terrain& terrain, const ContentRegistr
                       CommandBuffer& commands) {
     bind(world);
     rebuildZones(content);
+    scatterBossClocks(nowMillis);
     gatherViewers(world, players);
 
     expireEscorts(dt, commands);
@@ -627,6 +640,7 @@ void SpawnSystem::run(World& world, const Terrain& terrain, const ContentRegistr
 
     if (nowMillis >= nextPopulationMillis_) {
         nextPopulationMillis_ = nowMillis + kPopulationIntervalMillis;
+        cullExtraTopBosses(world, commands);
         takeCensus(content, viewers_, nowMillis, commands);
         promoteLatent(world, terrain, content, viewers_, rng, nowMillis);
     }
@@ -967,6 +981,7 @@ void SpawnSystem::rebuildZones(const ContentRegistry& content) {
     zoneContentHash_ = content.contentHash();
     zones_.clear();
     regions_.clear();
+    realmBiome_.fill(kInvalidIndex);
     if (worldMaps == nullptr) return;
 
     // Every staged map's bands, each tagged with the realm it belongs to. One
@@ -974,6 +989,10 @@ void SpawnSystem::rebuildZones(const ContentRegistry& content) {
     // filtering (by viewport, by realm, by tier), and a second level of
     // indirection would buy nothing at these counts.
     for (const MapData& map : worldMaps->maps()) {
+        // Every map's biome, banded or not: the one-unique rule has to know
+        // which biome an operator's spawn landed in wherever it landed.
+        const std::uint16_t biome = bossClockFor(map.biome());
+        realmBiome_[realmIndex(map.realm())] = biome;
         for (const MapElement& element : map.elements()) {
             if (!element.isSpawnBand() && !element.isMobRegion()) continue;
             SpawnZone zone;
@@ -1012,6 +1031,7 @@ void SpawnSystem::rebuildZones(const ContentRegistry& content) {
                 regions_.push_back(std::move(zone));
                 continue;
             }
+            zone.biome = biome;
 
             // The OUTLINE's area, not the bounding box's: a diagonal band
             // covers about half its box, and sizing its population by the box
@@ -1076,6 +1096,130 @@ void SpawnSystem::rebuildZones(const ContentRegistry& content) {
                          map.id().c_str());
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Boss clocks
+// ---------------------------------------------------------------------------
+
+std::uint16_t SpawnSystem::bossClockFor(const std::string& biome) {
+    for (std::size_t i = 0; i < bossClocks_.size(); ++i) {
+        if (bossClocks_[i].biome == biome) return static_cast<std::uint16_t>(i);
+    }
+    BiomeBossClock clock;
+    clock.biome = biome;
+    bossClocks_.push_back(std::move(clock));
+    return static_cast<std::uint16_t>(bossClocks_.size() - 1);
+}
+
+void SpawnSystem::scatterBossClocks(double nowMillis) {
+    std::vector<std::size_t> fresh;
+    for (std::size_t i = 0; i < bossClocks_.size(); ++i) {
+        if (!bossClocks_[i].scattered) fresh.push_back(i);
+    }
+    if (fresh.empty()) return;
+
+    // Evenly spaced rather than each drawn uniformly: n independent draws
+    // bunch up by chance, and the whole point is that two biomes' bosses do
+    // not arrive together. A fresh order per tier, so the biome first in line
+    // for a unique is not also first in line for an apex. The phase keeps the
+    // first slot off zero -- nothing is ready the moment the server starts,
+    // when every band is stocking cold and supers are being placed by the
+    // dozen.
+    const auto deal = [&](double cooldownMillis, bool apex) {
+        for (std::size_t i = fresh.size(); i > 1; --i) {
+            std::swap(fresh[i - 1], fresh[bossRng_.below(static_cast<std::uint32_t>(i))]);
+        }
+        const double phase = bossRng_.unit();
+        const double slots = static_cast<double>(fresh.size());
+        for (std::size_t slot = 0; slot < fresh.size(); ++slot) {
+            const double ready =
+                nowMillis + cooldownMillis * (static_cast<double>(slot) + phase) / slots;
+            BiomeBossClock& clock = bossClocks_[fresh[slot]];
+            (apex ? clock.apexReadyMillis : clock.uniqueReadyMillis) = ready;
+        }
+    };
+    deal(kUniqueSpawnCooldownMillis, false);
+    deal(kApexSpawnCooldownMillis, true);
+    for (const std::size_t i : fresh) bossClocks_[i].scattered = true;
+}
+
+Rarity SpawnSystem::rollBossUpgrade(World& world, const SpawnZone& zone, double nowMillis) {
+    if (zone.biome >= bossClocks_.size()) return Rarity::Super;
+    const BiomeBossClock& clock = bossClocks_[zone.biome];
+    // Only a READY clock draws at all, so the stream is untouched for every
+    // super spawned while both are cooling down. A ready clock whose tier is
+    // already standing in the biome does not draw either: it stays ready, and
+    // the first super after that one dies gets the roll.
+    const auto rolls = [&](double readyMillis, Rarity tier) {
+        return nowMillis >= readyMillis && !topBossTaken(world, tier, zone.realm) &&
+               bossRng_.chance(kBossUpgradeChance);
+    };
+    if (rolls(clock.apexReadyMillis, Rarity::Apex)) return Rarity::Apex;
+    if (rolls(clock.uniqueReadyMillis, Rarity::Unique)) return Rarity::Unique;
+    return Rarity::Super;
+}
+
+std::uint32_t SpawnSystem::biomeKey(Realm realm) const {
+    const std::uint16_t slot = realmBiome_[realmIndex(realm)];
+    // Past every clock slot, so a map-less realm never matches a biome.
+    return slot != kInvalidIndex ? slot : 0x10000u + static_cast<std::uint32_t>(realmIndex(realm));
+}
+
+bool SpawnSystem::topBossTaken(World& world, Rarity rarity, Realm realm) {
+    const std::uint32_t key = biomeKey(realm);
+    bool taken = false;
+    ambient_->each([&](Entity e, MobTag&, Transform& transform, Body&, MobType& type,
+                       AmbientMob&) {
+        if (taken || type.rarity != rarity || !isWholeAnimal(world, e)) return;
+        taken = isWorldRealm(transform.realm) && biomeKey(transform.realm) == key;
+    });
+    return taken;
+}
+
+void SpawnSystem::cullExtraTopBosses(World& world, CommandBuffer& commands) {
+    // Pets never appear here: a pet carries no AmbientMob, and this is the
+    // spawner's own population. Nor do the arena and the maze, which are not
+    // biomes and never field a unique anyway.
+    topBosses_.clear();
+    ambient_->each([&](Entity e, MobTag&, Transform& transform, Body&, MobType& type,
+                       AmbientMob& ambient) {
+        if (type.rarity != Rarity::Unique && type.rarity != Rarity::Apex) return;
+        if (!isWorldRealm(transform.realm) || !isWholeAnimal(world, e)) return;
+        topBosses_.push_back(TopBoss{biomeKey(transform.realm), type.rarity, ambient.spawnOrder, e});
+    });
+    if (topBosses_.size() < 2) return;
+
+    std::sort(topBosses_.begin(), topBosses_.end(), [](const TopBoss& a, const TopBoss& b) {
+        if (a.biome != b.biome) return a.biome < b.biome;
+        if (a.rarity != b.rarity) return rarityIndex(a.rarity) < rarityIndex(b.rarity);
+        return a.order < b.order;
+    });
+    culled_.clear();
+    for (std::size_t i = 1; i < topBosses_.size(); ++i) {
+        const TopBoss& first = topBosses_[i - 1];
+        const TopBoss& extra = topBosses_[i];
+        if (extra.biome == first.biome && extra.rarity == first.rarity) {
+            culled_.push_back(extra.entity);
+        }
+    }
+    if (culled_.empty()) return;
+
+    // The body goes with its head. A boss is never recycled, so a unique
+    // centipede's segments left behind would stand there for good -- and the
+    // first of them would promote itself to a head of its own.
+    Query<BodySegment> segments{world};
+    segments.without<Dead>();
+    const std::size_t heads = culled_.size();
+    segments.each([&](Entity e, BodySegment& link) {
+        if (link.chainHead == e) return;
+        if (std::find(culled_.begin(), culled_.begin() + static_cast<std::ptrdiff_t>(heads),
+                      link.chainHead) != culled_.begin() + static_cast<std::ptrdiff_t>(heads)) {
+            culled_.push_back(e);
+        }
+    });
+    for (const Entity e : culled_) commands.destroy(e);
+    census_.despawnedTotal += static_cast<int>(heads);
 }
 
 std::uint16_t SpawnSystem::rollResolvedRows(const ContentRegistry& content,
@@ -1211,11 +1355,15 @@ bool SpawnSystem::stockZone(World& world, const Terrain& terrain, const ContentR
     const double luck = nearestViewerLuck(viewers, zone.realm, centre);
 
     // The band's own DIFFICULTY, run through the one curve: this is where the
-    // map's rarity progression comes from, and where every boss in the world
-    // now comes from -- a difficulty-200 band is full of supers because its
-    // author said so, not because a separate pass decided the world was owed
-    // one.
+    // map's rarity progression comes from, and where every super in the world
+    // comes from -- a difficulty-200 band is full of supers because its author
+    // said so, not because a separate pass decided the world was owed one.
+    //
+    // Stopped at super. Everything above it belongs to the biome's clocks
+    // (below): a band steep enough to roll uniques on its own would spawn them
+    // far faster than kUniqueSpawnCooldownMillis allows.
     Rarity rarity = rollSpawnRarity(zone.difficulty, luck, rng);
+    if (rarityIndex(rarity) > rarityIndex(Rarity::Super)) rarity = Rarity::Super;
     std::uint16_t type = chooseZoneMobType(content, zone, at, rarity, rng);
     if (type == kInvalidIndex) return false;
     // A band naming a mob outright can name one below its own tier; the mob's
@@ -1223,6 +1371,16 @@ bool SpawnSystem::stockZone(World& world, const Terrain& terrain, const ContentR
     // AFTER the floor, because that is the tier that decides whether this is a
     // record or an event.
     rarity = clampRarity(std::max(rarityIndex(rarity), rarityIndex(content.mob(type).minRarity)));
+
+    // A super may come out a unique or an apex instead, if its biome's clock
+    // for that tier has run down. After the type roll, which is safe because a
+    // mob that is ambient at super is ambient at every tier above it; and never
+    // for a permanent fixture, which is a DPS post rather than an event.
+    bool upgraded = false;
+    if (rarity == Rarity::Super && !content.mob(type).neverAmbient) {
+        rarity = rollBossUpgrade(world, zone, nowMillis);
+        upgraded = rarity != Rarity::Super;
+    }
 
     if (!alwaysAwake(content, type, rarity)) {
         // The ordinary case, and the whole reason the map can be full: a
@@ -1266,6 +1424,15 @@ bool SpawnSystem::stockZone(World& world, const Terrain& terrain, const ContentR
                                       nowMillis, rng, 0, zoneIndex);
     if (spawned == NULL_ENTITY) return false;
     ++zone.liveMobs;
+    // Charged only now that the boss is standing. Every refusal above hands
+    // the slot back to the band and rolls it afresh on a later pass, and a
+    // clock spent on a spawn that never happened would be a whole cooldown
+    // with no boss in it.
+    if (upgraded && zone.biome < bossClocks_.size()) {
+        BiomeBossClock& clock = bossClocks_[zone.biome];
+        if (rarity == Rarity::Apex) clock.apexReadyMillis = nowMillis + kApexSpawnCooldownMillis;
+        else clock.uniqueReadyMillis = nowMillis + kUniqueSpawnCooldownMillis;
+    }
     // Counted straight away, so the rest of this pass spaces itself against
     // what it has just placed rather than against the last census alone --
     // in the band's realm, or crowdedAt() would never see it.
@@ -1425,8 +1592,19 @@ void SpawnSystem::announceIfNotable(const ContentRegistry& content, Entity entit
     // would put a line in chat for a post nobody has to fight.
     if (mobIndex >= content.mobCount() || content.mob(mobIndex).neverAmbient) return;
     // Oldest first, so a server that never drains this keeps the announcements
-    // somebody might still care about instead of the ones from an hour ago.
-    if (bossSpawns.size() >= kMaxPendingBossSpawns) bossSpawns.erase(bossSpawns.begin());
+    // somebody might still care about instead of the ones from an hour ago --
+    // but lowest tier first of all. A band restocking in bulk (after a
+    // killall, say) places dozens of supers in one pass, and the unique its
+    // biome's clock made out of one of them must not be pushed out by the
+    // rest.
+    if (bossSpawns.size() >= kMaxPendingBossSpawns) {
+        const auto victim = std::min_element(
+            bossSpawns.begin(), bossSpawns.end(), [](const BossSpawn& a, const BossSpawn& b) {
+                return rarityIndex(a.rarity) < rarityIndex(b.rarity);
+            });
+        if (rarityIndex(rarity) < rarityIndex(victim->rarity)) return;
+        bossSpawns.erase(victim);
+    }
     bossSpawns.push_back(BossSpawn{entity, mobIndex, rarity, position, realm});
 }
 

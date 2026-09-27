@@ -307,6 +307,11 @@ inline Rarity rollNaturalRarity(double luck, Rng& rng) {
 
 /// THE spawn roll: the rarity a mob appearing on difficulty-`difficulty` ground
 /// comes out at, for a player of this luck.
+///
+/// The server's band fill stops this at super: a wild unique or apex comes
+/// only from a biome's boss clock upgrading a super (kUniqueSpawnCooldownMillis
+/// in server/systems/spawning.h), so the curve past difficulty 200 describes
+/// the ground, not what grows on it.
 inline Rarity rollSpawnRarity(double difficulty, double luck, Rng& rng) {
     // Random ground is not a point on the curve: it rolls the whole spread, so
     // a common and a mythic can stand next to each other in one band.

@@ -246,6 +246,7 @@ bool GameServer::start(const ServerConfig& config, std::string& errorOut) {
     petals_ = std::make_unique<PetalSystem>();
     combat_ = std::make_unique<CombatSystem>();
     spawning_ = std::make_unique<SpawnSystem>();
+    spawning_->seedBossClocks(config.worldSeed ^ 0xB055C10C5ull);
     modes_ = std::make_unique<ModeSpawner>();
     loot_ = std::make_unique<LootSystem>();
     if (!loot_->loadTables(content(), config.dataDir + "/mob_drops.json", errorOut)) return false;
