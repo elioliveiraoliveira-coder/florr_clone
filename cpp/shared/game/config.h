@@ -629,15 +629,13 @@ struct PetalConfig {
     double burstManaChargeMillis = 0;
     /// Mana per second while equipped, before rarity. Summed over the bar.
     double passiveMana = 0;
-    /// What one act of this petal COSTS. A shot that cannot be paid for is not
-    /// fired and the petal keeps its cooldown, so an unfuelled magic missile
-    /// sits in the ring rather than reloading forever.
+    /// What bringing one of this petal onto the ring costs, before rarity.
+    /// Paid on SPAWN -- the equip reload and every reload after a break alike
+    /// -- never on use: a magic missile fires, and a magic bubble pops, for
+    /// free once it is out. A petal whose reload has run out and cannot be
+    /// paid for stays off the ring until the pool can cover it, then returns
+    /// at once. Charged per grain, so a clump of four is four payments.
     double requiredMana = 0;
-    /// What bringing one of this petal back onto the ring costs, before rarity.
-    /// A petal whose reload has run out and cannot be paid for stays off the
-    /// ring until the pool can cover it, then returns at once. Charged per
-    /// grain, so a clump of four is four payments. Blueberries.
-    double reloadMana = 0;
     /// Every hit this petal lands -- its body and its shots alike -- is
     /// lightning damage (DamageKind::Lightning), with no strike attached: the
     /// one victim touched, nothing chained. Blueberries.
@@ -787,10 +785,8 @@ struct PetalStats {
     double mana = 0;                    ///< burst mana per charge
     double manaChargeMillis = 0;
     double passiveManaPerSecond = 0;
-    /// What one act of this petal costs, this tier. See PetalConfig.
+    /// What one spawn of this petal costs, this tier. See PetalConfig.
     double requiredMana = 0;
-    /// What one reload of this petal costs, this tier. See PetalConfig.
-    double reloadMana = 0;
     double knockback = 0;
     double shield = 0;
     double slowFactor = 1.0;

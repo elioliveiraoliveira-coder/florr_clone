@@ -354,15 +354,10 @@ std::vector<TooltipLine> petalTooltipLines(std::uint16_t petalIndex, Rarity rari
     // of them can be read off the ring in play -- a player comparing two orbs
     // has nothing else to go on -- so they belong on the card.
     if (stats.requiredMana > 0.0) {
-        TooltipLine cost{"Mana Cost: " + abbreviate(stats.requiredMana), 12.0};
-        cost.alpha = 0.56;
-        cost.altText = "Mana Cost: " + exactNumber(stats.requiredMana);
-        lines.push_back(cost);
-    }
-    if (stats.reloadMana > 0.0) {
-        // One decimal: a blueberry's 1.2 would read as 1 through abbreviate().
+        // Paid on spawn, not on use -- see PetalConfig::requiredMana. One
+        // decimal: a blueberry's 1.2 would read as 1 through abbreviate().
         char figure[32];
-        std::snprintf(figure, sizeof figure, "%.1f", stats.reloadMana);
+        std::snprintf(figure, sizeof figure, "%.1f", stats.requiredMana);
         std::string text = figure;
         if (text.size() > 2 && text.compare(text.size() - 2, 2, ".0") == 0) {
             text.erase(text.size() - 2);

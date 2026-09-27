@@ -961,7 +961,6 @@ PetalConfig parsePetal(Ctx& ctx, const std::string& id, const Json& src,
     p.burstManaChargeMillis = ctx.range(src, "burstManaChargeMs", 0.0, 0.0, kMaxDurationMillis);
     p.passiveMana = ctx.range(src, "passiveMana", 0.0, 0.0, kMaxBaseStat);
     p.requiredMana = ctx.range(src, "requiredMana", 0.0, 0.0, kMaxBaseStat);
-    p.reloadMana = ctx.range(src, "reloadMana", 0.0, 0.0, kMaxBaseStat);
     p.lightningDamage = ctx.boolean(src, "lightningDamage");
 
     if (src.contains("fixedDirection")) {
@@ -1532,15 +1531,14 @@ PetalStats ContentRegistry::petalStats(std::uint16_t index, Rarity r) const {
     s.healChargeMillis = c.burstHealChargeMillis;
     s.passiveHealPerSecond = c.passiveHeal * heal;
     // One ladder for the whole resource, doubling per tier -- see
-    // petalManaScale. The cost of a cast is on it too, a few lines down, which
-    // is what keeps an all-one-tier magic kit casting at the rate it cast at
-    // the tier below.
+    // petalManaScale. The cost of a spawn is on it too, a few lines down, which
+    // is what keeps an all-one-tier magic kit reloading at the rate it
+    // reloaded at the tier below.
     s.maxMana = c.baseMaxMana * mana;
     s.mana = c.burstMana * mana;
     s.manaChargeMillis = c.burstManaChargeMillis;
     s.passiveManaPerSecond = c.passiveMana * mana;
     s.requiredMana = c.requiredMana * mana;
-    s.reloadMana = c.reloadMana * mana;
     // TypeScript keeps ordinary petal knockback flat across rarities. Jelly is
     // the one intentional exception: its per-rarity values are literal
     // overrides in petals.ts, not another copy of the damage multiplier.

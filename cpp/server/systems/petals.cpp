@@ -395,9 +395,9 @@ double slotHealthFraction(World& world, const PetalSlotState::Slot& state,
 
 /// Pays `cost` out of the flower's pool, all of it or none of it.
 ///
-/// All-or-none because a cast is: a missile that took what mana there was and
-/// flew anyway is a petal with no cost, and one that took the mana and did not
-/// fly is a petal that eats the pool. The caller acts only on true.
+/// All-or-none because a spawn is: a petal that took what mana there was and
+/// came back anyway is a petal with no cost, and one that took the mana and did
+/// not come back is a petal that eats the pool. The caller acts only on true.
 bool spendMana(World& world, Entity player, double cost) {
     if (!(cost > 0.0)) return true;
     ManaPool* pool = world.tryGet<ManaPool>(player);
@@ -408,10 +408,10 @@ bool spendMana(World& world, Entity player, double cost) {
 
 /// Whether the flower could pay `cost` right now, without taking it.
 ///
-/// Separate from spendMana because a volley is charged only once it has really
-/// left: the test decides whether to TRY, the payment is made after the shot
-/// exists. Collapsing the two would bill a magic missile for a volley that
-/// degenerate content refused to fire.
+/// Separate from spendMana because a grain is charged only once it really
+/// exists: the test decides whether to TRY, the payment is made after the spawn
+/// succeeds. Collapsing the two would bill a clump for a grain the world
+/// refused to create.
 bool canAffordMana(World& world, Entity player, double cost) {
     if (!(cost > 0.0)) return true;
     const ManaPool* pool = world.tryGet<ManaPool>(player);
@@ -850,12 +850,12 @@ void PetalSystem::reconcileSlots(World& world, const ContentRegistry& registry, 
             }
         }
 
-        // A petal with a reload price comes back only once it is paid, and
+        // A petal with a mana price comes back only once it is paid, and
         // the slot waits broken until then rather than coming back empty:
         // the fold above would charge an absent instance as a full loss and
         // break it again on the next tick.
         if (slot.broken && !slotState.independent && nowMillis >= slot.reloadReadyAtMillis &&
-            spendMana(world, player, stats.reloadMana)) {
+            spendMana(world, player, stats.requiredMana)) {
             slot.broken = false;
             slot.reloadReadyAtMillis = 0;
             slotState.poolHealth = slotState.poolMax;
@@ -904,7 +904,7 @@ void PetalSystem::reconcileSlots(World& world, const ContentRegistry& registry, 
                 // Each grain is its own reload and its own payment. One that
                 // is due and cannot be paid for keeps its lapsed deadline, so
                 // it returns the moment the pool can cover it.
-                if (!canAffordMana(world, player, stats.reloadMana)) continue;
+                if (!canAffordMana(world, player, stats.requiredMana)) continue;
             } else if (slot.broken) {
                 continue;
             }
@@ -914,7 +914,7 @@ void PetalSystem::reconcileSlots(World& world, const ContentRegistry& registry, 
                                             slot.configIndex, slot.rarity, spawnHealth, nowMillis);
             if (petal == NULL_ENTITY) continue;
             // Paid once the grain exists, never before it.
-            if (slotState.independent) spendMana(world, player, stats.reloadMana);
+            if (slotState.independent) spendMana(world, player, stats.requiredMana);
             live.push_back(petal);
             present |= 1ull << k;
             if (slotState.independent) {
@@ -1925,8 +1925,8 @@ void PetalSystem::runActions(World& world, const ContentRegistry& registry, Enti
             // than a shove -- and with no direction asked for there is nothing
             // to steer, so the burst is held rather than spent on a bearing
             // the player did not choose. Held, not wasted: the petal stays in
-            // the ring at full charge with its mana unspent, and goes the
-            // instant a key is pressed.
+            // the ring at full charge, and goes the instant a key is pressed.
+            // The pop itself is free; its mana was paid when it spawned.
             Vec2 push;
             if (config.id == "magic_bubble") {
                 const double strength = input != nullptr ? input->current.moveStrength : 0.0;
@@ -1939,12 +1939,6 @@ void PetalSystem::runActions(World& world, const ContentRegistry& registry, Enti
             } else if (owner != nullptr) {
                 push = owner->position + popDisplacement - transform->position;
             }
-
-            // The magic bubble costs mana, and an unpayable pop is not a pop:
-            // the petal stays in the ring, unpopped and off cooldown, and goes
-            // the moment the pool can cover it. Asked AFTER the direction, so
-            // a burst that was going to be held anyway is not charged for.
-            if (!spendMana(world, player, stats.requiredMana)) continue;
 
             Motion* motion = world.tryGet<Motion>(player);
             if (owner != nullptr && motion != nullptr && push.lengthSq() > 0.0) {
@@ -1981,11 +1975,9 @@ void PetalSystem::runActions(World& world, const ContentRegistry& registry, Enti
         const bool shooting = attacking || (config.defendOnly && defending);
         if (config.projectile.present && shooting &&
             nowMillis >= instance->nextProjectileMillis) {
-            // Affordability is checked BEFORE the cooldown is armed. A magic
-            // missile over an empty pool is a petal still waiting to fire, not
-            // one that has fired and is reloading -- arming the timer first
-            // would make a dry cast cost the player the shot it never got.
-            if (!canAffordMana(world, player, stats.requiredMana)) continue;
+            // No mana is asked here: a magic missile paid for itself when it
+            // spawned, and the shot it is spent on is free.
+            //
             // The same cooldown the break path pays, on the same talent: a
             // missile petal's reload IS its rate of fire, so a tree that halves
             // one and leaves the other would cap the ring at the slower of two
@@ -1998,8 +1990,6 @@ void PetalSystem::runActions(World& world, const ContentRegistry& registry, Enti
             const std::uint8_t firedSub = instance->subIndex;
             if (fireProjectiles(world, player, petal, config, stats, instance->configIndex,
                                 instance->rarity)) {
-                // Charged once the volley really exists, never before it.
-                spendMana(world, player, stats.requiredMana);
                 // The shot IS the petal leaving the ring: firing spends it, the
                 // same way being thrown spends web and pollen, and the
                 // reference launches the petal ITSELF as the missile.

@@ -68,7 +68,7 @@ const char* const kPetalsJson = R"JSON({
   "yuccaish": {"name":"Yuccaish","damage":1,"health":5,"size":1,"cooldown":1000,"count":1,"passiveHeal":1,"passiveHealDefendOnly":true,"color":"#74B53F"},
   "magicmissile":{"name":"Magic Missile","damage":6,"health":5,"size":1,"cooldown":1000,"count":1,"requiredMana":30,"projectile":{"count":1,"spreadAngle":0,"speed":800,"distance":1000},"color":"#42E3F5"},
   "magic_bubble":{"name":"Magic Bubble","damage":0,"health":1,"size":1,"cooldown":1000,"count":1,"requiredMana":40,"color":"#42E3F5"},
-  "berries":  {"name":"Berries","damage":8,"health":10,"size":1,"cooldown":50,"count":4,"clumped":true,"defendOnly":true,"reloadMana":10,"lightningDamage":true,"projectile":{"count":1,"spreadAngle":1.5708,"speed":800,"distance":1000},"color":"#42E3F5"}
+  "berries":  {"name":"Berries","damage":8,"health":10,"size":1,"cooldown":50,"count":4,"clumped":true,"defendOnly":true,"requiredMana":10,"lightningDamage":true,"projectile":{"count":1,"spreadAngle":1.5708,"speed":800,"distance":1000},"color":"#42E3F5"}
 })JSON";
 
 const char* const kMobsJson = R"JSON({
@@ -2176,30 +2176,38 @@ TEST(an_orb_charges_homes_and_restores_mana_only_while_the_pool_is_short) {
     CHECK_EQ(rig.petals(1).size(), std::size_t(1));
 }
 
-TEST(a_magic_missile_is_paid_for_in_mana_and_stops_firing_when_the_pool_is_dry) {
+TEST(a_magic_missile_is_paid_for_when_it_spawns_and_fires_for_free) {
     if (!contentLoaded()) return;
     Rig rig;
     rig.equip(0, "vessel");
     rig.equip(1, "magicmissile");
+    const auto mana = [&] { return rig.world.get<ManaPool>(rig.player).current; };
     rig.settleEquips();
-    rig.tick();
-    ManaPool& pool = rig.world.get<ManaPool>(rig.player);
-    CHECK_NEAR(pool.current, 100.0, 1e-9);
+    // The equip reload is a spawn like any other, and was paid for.
+    CHECK_NEAR(mana(), 70.0, 1e-9);
 
+    // The shot itself takes nothing.
     rig.setFlags(net::InputAttack);
     CHECK(rig.tickUntil([&] { return rig.countOf(net::EntityKind::Projectile) >= 1; }));
-    CHECK_NEAR(rig.world.get<ManaPool>(rig.player).current, 70.0, 1e-9);
+    CHECK_NEAR(mana(), 70.0, 1e-9);
 
-    // Three shots is all 100 mana buys. The fourth is refused, and refused
+    // Each reload is paid as the petal comes back: 70 -> 40 -> 10, and 10
+    // cannot buy a fourth. That one waits off the ring, broken, and waits
     // WITHOUT taking what is left: a partial payment would drain the pool for
-    // a shot that never flew.
-    CHECK(rig.tickUntil([&] { return rig.world.get<ManaPool>(rig.player).current <= 10.0; }, 4000));
-    const std::size_t flown = rig.countOf(net::EntityKind::Projectile);
+    // a petal that never came back.
+    CHECK(rig.tickUntil([&] { return mana() <= 10.0; }, 4000));
+    rig.setFlags(0);
     rig.tick(400);
-    CHECK_NEAR(rig.world.get<ManaPool>(rig.player).current, 10.0, 1e-9);
-    CHECK(rig.countOf(net::EntityKind::Projectile) <= flown);
-    // And the petal is still in the ring waiting, not spent.
+    CHECK_NEAR(mana(), 10.0, 1e-9);
+    CHECK(rig.slot(1).broken);
+    CHECK(rig.petals(1).empty());
+
+    // Funded, it is back on the very next tick, and paid for.
+    rig.world.get<ManaPool>(rig.player).current = 100.0;
+    rig.tick();
     CHECK(!rig.slot(1).broken);
+    CHECK_EQ(rig.petals(1).size(), std::size_t(1));
+    CHECK_NEAR(mana(), 70.0, 1e-9);
 }
 
 TEST(a_berry_comes_back_only_once_its_reload_is_paid_for) {
@@ -2250,29 +2258,42 @@ TEST(a_berry_reloads_on_its_own_short_cooldown_when_the_pool_can_pay) {
     CHECK(rig.world.get<ManaPool>(rig.player).current <= 100.0 - 40.0 + 1e-9);
 }
 
-TEST(a_magic_bubble_that_cannot_be_paid_for_does_not_pop) {
+TEST(a_magic_bubble_is_paid_for_when_it_spawns_not_when_it_pops) {
     if (!contentLoaded()) return;
     Rig rig;
     rig.equip(0, "vessel");
     rig.equip(1, "magic_bubble");
+    const auto mana = [&] { return rig.world.get<ManaPool>(rig.player).current; };
     rig.settleEquips();
     rig.tick();
-    rig.world.get<ManaPool>(rig.player).current = 10.0;
+    // The equip reload was a spawn, and was paid for.
+    CHECK_NEAR(mana(), 60.0, 1e-9);
 
+    // An empty pool does not hold the pop back: its mana is already spent.
     // The pop is momentum handed to the flower, and this rig steps no
     // movement, so the velocity it is left holding IS the burst.
+    rig.world.get<ManaPool>(rig.player).current = 0.0;
     rig.setFlags(net::InputDefend);
     rig.setMove(0.0);
-    rig.tick(4);
-    CHECK_NEAR(rig.velocity(rig.player).length(), 0.0, 1e-9);
-    CHECK(!rig.slot(1).broken);
-    CHECK_NEAR(rig.world.get<ManaPool>(rig.player).current, 10.0, 1e-9);
-
-    // Funded, it pops and the mana is gone.
-    rig.world.get<ManaPool>(rig.player).current = 100.0;
     rig.tick();
     CHECK(rig.velocity(rig.player).length() > 1.0);
-    CHECK_NEAR(rig.world.get<ManaPool>(rig.player).current, 60.0, 1e-9);
+    CHECK_NEAR(mana(), 0.0, 1e-9);
+
+    // The next one is what cannot be paid for. Its reload runs out and the
+    // slot waits broken, taking nothing from a pool that cannot cover it.
+    rig.setFlags(0);
+    rig.world.get<ManaPool>(rig.player).current = 10.0;
+    rig.tick(100);
+    CHECK(rig.slot(1).broken);
+    CHECK(rig.petals(1).empty());
+    CHECK_NEAR(mana(), 10.0, 1e-9);
+
+    // Funded, it is back at once.
+    rig.world.get<ManaPool>(rig.player).current = 100.0;
+    rig.tick();
+    CHECK(!rig.slot(1).broken);
+    CHECK_EQ(rig.petals(1).size(), std::size_t(1));
+    CHECK_NEAR(mana(), 60.0, 1e-9);
 }
 
 TEST(a_magic_bubble_throws_the_flower_the_way_it_is_asking_to_go) {
@@ -2322,16 +2343,16 @@ TEST(a_magic_bubble_with_no_direction_asked_for_is_held_not_spent) {
     rig.tick();
 
     // Defend held, nothing asked for: the petal stays in the ring at full
-    // charge and its mana is untouched.
+    // charge. Only its spawn was paid for.
     rig.setFlags(net::InputDefend);
     rig.setMove(0.0, 0.0);
     rig.tick(20);
     CHECK_NEAR(rig.velocity(rig.player).length(), 0.0, 1e-9);
     CHECK(!rig.slot(1).broken);
     CHECK_EQ(rig.petals(1).size(), std::size_t(1));
-    CHECK_NEAR(rig.world.get<ManaPool>(rig.player).current, 100.0, 1e-9);
+    CHECK_NEAR(rig.world.get<ManaPool>(rig.player).current, 60.0, 1e-9);
 
-    // And it goes the instant a key is pressed.
+    // And it goes the instant a key is pressed, for nothing more.
     rig.setMove(kPi);
     rig.tick();
     CHECK(rig.velocity(rig.player).length() > 1.0);
