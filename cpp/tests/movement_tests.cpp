@@ -653,16 +653,39 @@ TEST(the_lifetime_backstop_never_cuts_an_ordinary_flight_short) {
     CHECK_NEAR(fx.positionOf(shot).x, 5000.0 + range, 1e-6);
 }
 
-TEST(a_projectile_that_hits_terrain_is_spent_where_it_hit) {
+TEST(a_projectile_flies_through_walls) {
+    // Walls do not stop a shot. It crosses a full-height wall column as if the
+    // ground were open, spends its range at the ordinary rate while inside the
+    // solid, and dies where its range runs out on the far side.
     Fixture fx;
     fx.wallColumn(10);
-    const Entity shot = fx.spawnProjectile({kWallWest - 100.0, 5000}, {800, 0}, 100000.0);
+    const double startX = kWallWest - 100.0;
+    const double range = 1000.0;
+    const Entity shot = fx.spawnProjectile({startX, 5000}, {800, 0}, range);
+
+    // Five ticks at 800 u/s is ~133 units: through the west face and inside.
+    fx.step(5);
+    CHECK(!fx.world.has<Dead>(shot));
+    CHECK(fx.terrain.blocked(fx.positionOf(shot), Realm::Overworld));
+    CHECK_NEAR(fx.positionOf(shot).x, startX + 800.0 * 5 * net::kTickSeconds, 1e-6);
+
+    fx.step(40);
+    CHECK(fx.world.has<Dead>(shot));
+    CHECK_NEAR(fx.positionOf(shot).x, startX + range, 1e-6);
+    CHECK(fx.positionOf(shot).x > kWallEast);
+    CHECK_NEAR(fx.positionOf(shot).y, 5000.0, 1e-9);
+}
+
+TEST(a_projectile_that_reaches_the_edge_of_the_world_is_spent_there) {
+    // The one thing a shot cannot fly through: the realm's own boundary.
+    Fixture fx;
+    const Entity shot = fx.spawnProjectile({100.0, 5000}, {-800, 0}, 100000.0);
     fx.step(40);
 
     CHECK_NEAR(fx.world.get<Projectile>(shot).remainingDistance, 0.0, 1e-12);
     CHECK(fx.world.has<Dead>(shot));
-    CHECK(fx.positionOf(shot).x < kWallWest);
-    CHECK(!fx.terrain.blocked(fx.positionOf(shot), Realm::Overworld));
+    CHECK(fx.positionOf(shot).x >= 0.0);
+    CHECK(fx.positionOf(shot).x < 100.0);
 }
 
 TEST(a_guided_shot_re_aims_once_at_launch_and_then_flies_straight) {

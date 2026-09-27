@@ -311,7 +311,7 @@ void stealLife(World& world, Entity player, double amount, double nowMillis) {
 struct CombatSystem::Queries {
     explicit Queries(World& world)
         : progress(world), afflicted(world), auras(world), contact(world), strikers(world),
-          petals(world), projectiles(world), fields(world), cooldowns(world),
+          petals(world), projectiles(world), filedShots(world), fields(world), cooldowns(world),
           auraCooldowns(world) {
         // A dead flower projects nothing, which is the same guard the
         // reference's pre-movement pass opens with.
@@ -348,6 +348,11 @@ struct CombatSystem::Queries {
     Query<MobTag, MobType, Transform, Body> strikers;
     Query<PetalInstance, Transform, Body> petals;
     Query<Projectile, Transform, Body, Motion> projectiles;
+    /// Every shot with a body, corpses included: the set the server's main
+    /// grid leaves out, filed by fileShots() instead. Dead ones are kept for the
+    /// same reason the main grid keeps them -- the passes refuse a corpse
+    /// themselves, and filing is not the place to decide what they may see.
+    Query<ProjectileTag, Transform, Body> filedShots;
     Query<GroundEffect, Transform> fields;
     Query<HitCooldowns> cooldowns;
     Query<AuraCooldowns> auraCooldowns;
@@ -1282,6 +1287,7 @@ void CombatSystem::runContactPhase(World& world, const SpatialGrid& grid,
     resolveAuras(world, grid, nowMillis);
     gatherContact(world, content);
     gatherPetals(world, content);
+    fileShots(world);
     resolveMelee(world, grid, nowMillis);
 }
 
@@ -1293,6 +1299,11 @@ void CombatSystem::tickMobLightning(World& world, const SpatialGrid& grid,
 
 void CombatSystem::runWorldPhase(World& world, const SpatialGrid& grid,
                                  const ContentRegistry& content, double nowMillis, double dt) {
+    // Refiled after movement for the reason the server rebuilds its main grid
+    // there: the shots have flown, and the mobs' own shots were fired, since
+    // the contact phase filed them.
+    fileShots(world);
+
     // TypeScript advances projectiles and then world fields after mobs move.
     // Damage fields are commutative within this phase, while projectile impact
     // remains the discrete collision whose post-movement position matters.
@@ -1444,7 +1455,7 @@ void CombatSystem::tickGroundEffects(World& world, const SpatialGrid& grid,
         }
         if (field.damagePerSecond <= 0.0 && field.damagePerHit <= 0.0 &&
             field.slowFactor >= 1.0) continue;
-        grid.query(field.realm, field.position, field.radius + kBroadphasePad, candidates_);
+        queryBodies(grid, field.realm, field.position, field.radius + kBroadphasePad, candidates_);
         for (const Entity victim : candidates_) {
             const Transform* transform = world.tryGet<Transform>(victim);
             if (transform == nullptr) continue;
@@ -1713,9 +1724,24 @@ void CombatSystem::resolveMelee(World& world, const SpatialGrid& grid, double no
         // The grid files each entity under every cell its own radius touches,
         // so a query at the attacker's radius already returns everything whose
         // circle could overlap; the exact test below is the one that decides.
-        grid.query(source.realm, source.position, source.radius + kBroadphasePad, candidates_);
+        queryBodies(grid, source.realm, source.position, source.radius + kBroadphasePad,
+                    candidates_);
+        // Resolved once per source, for the shots below: the answer canDamage()
+        // would reach for every one of them.
+        const Entity sourcePlayer = creditedPlayer(world, source.attacker);
         for (const Entity victim : candidates_) {
             if (victim == source.attacker) continue;
+            // A shot is judged off the filing table before anything is looked
+            // up, because a cloud of them is most of what a body standing in
+            // one finds. Both tests are the ones below, reached sooner: nothing
+            // this loop does to a shot happens before canHit(), which refuses
+            // a shot answerable to the attacker's own flower, and a shot's
+            // reach carries none of the pet or NPC allowances.
+            if (const FiledShot* shot = filedShot(victim)) {
+                if (sourcePlayer != NULL_ENTITY && shot->player == sourcePlayer) continue;
+                const double reach = source.radius + shot->radius;
+                if ((shot->position - source.position).lengthSq() > reach * reach) continue;
+            }
             const Transform* transform = world.tryGet<Transform>(victim);
             const Body* body = world.tryGet<Body>(victim);
             if (transform == nullptr || body == nullptr) continue;
@@ -2190,15 +2216,25 @@ void CombatSystem::tickProjectiles(World& world, const SpatialGrid& grid,
         const Vec2 flown = shot.position - shot.from;
         const double flownLength = flown.length();
         const Vec2 midpoint = shot.from + flown * 0.5;
-        grid.query(shot.realm, midpoint,
-                   shot.radius + flownLength * 0.5 + shot.travelled + kBroadphasePad, candidates_);
+        queryBodies(grid, shot.realm, midpoint,
+                    shot.radius + flownLength * 0.5 + shot.travelled + kBroadphasePad,
+                    candidates_);
+        const Entity shooter = filedShotPlayer(shot.entity);
 
         // Gathered whole before a single hit lands. The loop below marks
         // victims Dead and that relocates their rows, so nothing here may hold
         // a pointer into the world across an applyDamage().
         impacts_.clear();
         for (const Entity victim : candidates_) {
-            if (victim == shot.entity || !world.isAlive(victim)) continue;
+            if (victim == shot.entity) continue;
+            // Two shots answerable to the same flower never hurt each other --
+            // canDamage() refuses the pair on its very first rule -- and a
+            // flower's own volleys are most of what a dense cloud finds around
+            // each of its shots. Turned away off the filing table, before a
+            // single component lookup, which is what keeps a loadout of gas
+            // from making this pass quadratic in the size of the cloud.
+            if (shooter != NULL_ENTITY && filedShotPlayer(victim) == shooter) continue;
+            if (!world.isAlive(victim)) continue;
             if (!isShootable(world, victim)) continue;
             const Transform* transform = world.tryGet<Transform>(victim);
             const Body* body = world.tryGet<Body>(victim);
@@ -2344,6 +2380,122 @@ void CombatSystem::tickProjectiles(World& world, const SpatialGrid& grid,
             }
         }
     }
+}
+
+namespace {
+
+/// Columns and rows of the shot index fit in 24 bits each. A coordinate past
+/// the last one -- sixty-four units times sixteen million, far outside any
+/// realm -- shares the border cell rather than wrapping into another row.
+constexpr std::uint32_t kShotCellLimit = 1u << 24;
+
+std::uint32_t shotCellCoord(double at, double cellSize) {
+    const double c = std::floor(at / cellSize);
+    // Failed comparisons, so NaN lands in cell 0 rather than in a cast.
+    if (!(c > 0.0)) return 0;
+    if (!(c < static_cast<double>(kShotCellLimit))) return kShotCellLimit - 1;
+    return static_cast<std::uint32_t>(c);
+}
+
+std::uint64_t shotCellKey(Realm realm, std::uint32_t row, std::uint32_t column) {
+    return (static_cast<std::uint64_t>(realmIndex(realm)) << 48) |
+           (static_cast<std::uint64_t>(row) << 24) | column;
+}
+
+} // namespace
+
+void CombatSystem::fileShots(World& world) {
+    // Retire last phase's slots before the list they index is dropped.
+    for (const FiledShot& filed : filedShots_) {
+        const std::uint32_t index = entityIndex(filed.entity);
+        if (index < shotSlot_.size()) shotSlot_[index] = kNoShotSlot;
+    }
+    filedShots_.clear();
+    shotCells_.clear();
+    maxShotRadius_ = 0.0;
+    shotRowMin_ = kShotCellLimit - 1;
+    shotRowMax_ = 0;
+
+    queries_->filedShots.each([&](Entity e, ProjectileTag&, Transform& transform, Body& body) {
+        const std::uint32_t index = entityIndex(e);
+        if (index >= shotSlot_.size()) {
+            shotSlot_.resize(std::max<std::size_t>(static_cast<std::size_t>(index) + 1,
+                                                   shotSlot_.size() * 2),
+                             kNoShotSlot);
+        }
+        const std::uint32_t slot = static_cast<std::uint32_t>(filedShots_.size());
+        shotSlot_[index] = slot;
+        // Resolved now, once, rather than per pair: nothing in a combat phase
+        // destroys an entity, so the answer cannot change before it is read.
+        filedShots_.push_back({e, creditedPlayer(world, e), transform.position, body.radius});
+
+        // A position no query can reach is not filed, as the main grid files
+        // none: it is still a shot, it is just never a candidate.
+        const Vec2 at = transform.position;
+        if (!std::isfinite(at.x) || !std::isfinite(at.y)) return;
+        if (body.radius > maxShotRadius_) maxShotRadius_ = body.radius;
+        const std::uint32_t row = shotCellCoord(at.y, kShotCellSize);
+        shotRowMin_ = std::min(shotRowMin_, row);
+        shotRowMax_ = std::max(shotRowMax_, row);
+        shotCells_.push_back(
+            {shotCellKey(transform.realm, row, shotCellCoord(at.x, kShotCellSize)), slot});
+    });
+    // Slot as the tiebreak, so shots sharing a cell come back in filing order
+    // and a query's answer does not depend on how the sort felt about ties.
+    std::sort(shotCells_.begin(), shotCells_.end(), [](const ShotCell& a, const ShotCell& b) {
+        return a.key != b.key ? a.key < b.key : a.slot < b.slot;
+    });
+}
+
+void CombatSystem::queryShots(Realm realm, Vec2 center, double radius,
+                              std::vector<Entity>& out) const {
+    if (shotCells_.empty()) return;
+    if (!std::isfinite(center.x) || !std::isfinite(center.y)) return;
+    if (!(radius >= 0.0)) radius = 0.0;   // negative, and NaN
+    // Widened by the biggest shot, because a shot is filed only under its
+    // centre: one whose edge reaches into the circle may sit a radius outside.
+    const double reach = radius + maxShotRadius_;
+    const std::uint32_t x0 = shotCellCoord(center.x - reach, kShotCellSize);
+    const std::uint32_t x1 = shotCellCoord(center.x + reach, kShotCellSize);
+    const std::uint32_t y0 = std::max(shotCellCoord(center.y - reach, kShotCellSize), shotRowMin_);
+    const std::uint32_t y1 = std::min(shotCellCoord(center.y + reach, kShotCellSize), shotRowMax_);
+    for (std::uint32_t row = y0; row <= y1; ++row) {
+        const std::uint64_t first = shotCellKey(realm, row, x0);
+        const std::uint64_t last = shotCellKey(realm, row, x1);
+        auto it = std::lower_bound(shotCells_.begin(), shotCells_.end(), first,
+                                   [](const ShotCell& cell, std::uint64_t key) {
+                                       return cell.key < key;
+                                   });
+        for (; it != shotCells_.end() && it->key <= last; ++it) {
+            out.push_back(filedShots_[it->slot].entity);
+        }
+    }
+}
+
+const CombatSystem::FiledShot* CombatSystem::filedShot(Entity e) const {
+    const std::uint32_t index = entityIndex(e);
+    if (index >= shotSlot_.size()) return nullptr;
+    const std::uint32_t slot = shotSlot_[index];
+    if (slot == kNoShotSlot || filedShots_[slot].entity != e) return nullptr;
+    return &filedShots_[slot];
+}
+
+Entity CombatSystem::filedShotPlayer(Entity e) const {
+    const FiledShot* shot = filedShot(e);
+    return shot != nullptr ? shot->player : NULL_ENTITY;
+}
+
+void CombatSystem::queryBodies(const SpatialGrid& grid, Realm realm, Vec2 center, double radius,
+                               std::vector<Entity>& out) {
+    grid.query(realm, center, radius, out);
+    // The server's grid files no shots, but a focused simulation that builds
+    // its grid from every body does -- and must not be handed a shot twice.
+    if (!filedShots_.empty()) {
+        out.erase(std::remove_if(out.begin(), out.end(),
+                                 [&](Entity e) { return isFiledShot(e); }),
+                  out.end());
+    }
+    queryShots(realm, center, radius, out);
 }
 
 void CombatSystem::pushFromImpact(World& world, Entity victim, Vec2 offset, double shotMass,

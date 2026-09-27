@@ -7,8 +7,10 @@
 // movement the two agree bit for bit and nothing visibly corrects. Any
 // shortcut taken here that the client does not take is a rubber-band.
 //
-// Everything else -- mobs, projectiles -- shares the collision half of that
-// path and differs only in where its velocity came from.
+// Mobs share the collision half of that path and differ only in where their
+// velocity came from. Projectiles take the same step with terrain collision
+// switched off: a shot flies through walls, and only the edge of the world
+// stops it.
 
 #include <cstdint>
 #include <functional>
@@ -127,8 +129,8 @@ struct StepOutcome {
 /// `refuseWallCrossing` adds the reference's player containment guard: a
 /// substep whose wall ejection would carry the CENTRE across solid is thrown
 /// away and the body stops where it started. Off by default because the
-/// reference only guards flowers -- mobs and projectiles take the resolver's
-/// word for it.
+/// reference only guards flowers -- mobs take the resolver's word for it, and
+/// projectiles do not collide with terrain at all.
 StepOutcome stepCollide(const Terrain& terrain, Realm realm, Vec2& position, Vec2 velocity,
                         double radius, double dt, bool collideTerrain = true,
                         bool refuseWallCrossing = false);
@@ -289,7 +291,8 @@ private:
     /// stream, or every mob spawned after somebody took a pad would differ.
     Rng teleportRng_{0x7E1E907E1EULL};
 
-    /// Projectiles whose distance budget or terrain step ended this tick.
+    /// Projectiles whose distance budget ended, or that reached the world's
+    /// edge, this tick.
     /// Collected during the query walk and marked Dead afterwards: adding a
     /// component relocates an entity between archetypes, so doing it inline
     /// would invalidate the columns moveProjectiles is iterating.

@@ -551,13 +551,18 @@ void MovementSystem::moveProjectiles(World& world, const Terrain& terrain, doubl
         double radius = 0.0;
         if (const Body* body = world.tryGet<Body>(e)) radius = body->radius;
 
-        const StepOutcome out =
-            stepCollide(terrain, transform.realm, transform.position, attempted, radius, dt);
+        // Walls do not stop a shot: it flies over terrain as if the map were
+        // open ground, so a volley fired along a corridor or across a bend
+        // still reaches what it was aimed at. The world's edge is the one
+        // thing it cannot cross -- the step still clamps to it, and that clamp
+        // is what `blocked` reports.
+        const StepOutcome out = stepCollide(terrain, transform.realm, transform.position,
+                                            attempted, radius, dt, /*collideTerrain=*/false);
         projectile.remainingDistance -= out.displacement.length();
         if (!(projectile.remainingDistance > kSpentRangeEpsilon)) projectile.remainingDistance = 0.0;
 
         if (out.blocked) {
-            // Terrain and the map edge eat shots.
+            // The map edge eats shots.
             projectile.remainingDistance = 0.0;
             motion.velocity = {0, 0};
             spentProjectiles_.push_back(e);

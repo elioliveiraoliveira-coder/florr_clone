@@ -520,6 +520,27 @@ private:
                          Vec2 victimPosition, double victimRadius, double nowMillis);
     void tickProjectiles(World& world, const SpatialGrid& grid, const ContentRegistry& content,
                          double nowMillis, double dt);
+
+    /// Files every projectile in the shot index, and resolves the flower each
+    /// one is answerable to. Run at the top of both phases, at the same points the
+    /// server rebuilds its main grid, so the two describe the same world.
+    void fileShots(World& world);
+    struct FiledShot;
+    /// `e`'s entry if it is a projectile fileShots() filed this phase.
+    const FiledShot* filedShot(Entity e) const;
+    bool isFiledShot(Entity e) const { return filedShot(e) != nullptr; }
+    /// The flower a filed shot is answerable to, or NULL_ENTITY for a shot
+    /// with none (a wild mob's) and for anything that is not a filed shot.
+    Entity filedShotPlayer(Entity e) const;
+    /// Every body a pass that may hit a PROJECTILE has to consider: the main
+    /// broadphase's candidates plus combat's own shots. The passes that only
+    /// ever want flowers or mobs query the main grid directly and never pay
+    /// for the shots at all.
+    void queryBodies(const SpatialGrid& grid, Realm realm, Vec2 center, double radius,
+                     std::vector<Entity>& out);
+    /// Appends every filed shot that could overlap the circle -- candidates,
+    /// as a grid query returns, for the caller's exact test.
+    void queryShots(Realm realm, Vec2 center, double radius, std::vector<Entity>& out) const;
     /// Spread a shared chain's pool across the bodies that draw on it: every
     /// segment behind `owner` is given the owner's health FRACTION and its
     /// flash, and -- when the hit was fatal -- the same death.
@@ -572,6 +593,52 @@ private:
     std::vector<PoisonTick> spongeTicks_;
 
     std::vector<Entity> candidates_;
+
+    /// PROJECTILES' OWN BROADPHASE. The server's main grid does not file shots
+    /// at all: a flower on a full loadout of gas keeps over a thousand of them
+    /// in the air around itself, and in a 600-unit grid every one of them was
+    /// a candidate for every mob's aggro scan, every petal's swing and -- the
+    /// quadratic part -- every other shot's hit test. Only the three passes
+    /// that can actually strike a shot (melee, ground fields and shot against
+    /// shot) look here, through queryBodies(), at cells sized to a shot rather
+    /// than to a mob's aggro range.
+    ///
+    /// A sorted list of (cell, shot) rather than a SpatialGrid: cells this
+    /// small over every map realm would be megabytes of empty buckets, while
+    /// this costs sixteen bytes a shot and nothing where there are none. Each
+    /// shot is filed under the cell its CENTRE is in, once, and a query widens
+    /// itself by the largest shot filed instead -- so there are no duplicates
+    /// to strip.
+    static constexpr double kShotCellSize = 64.0;
+    struct ShotCell {
+        /// Realm, row, column, most significant first: one row of one realm is
+        /// a contiguous run, found with one binary search.
+        std::uint64_t key = 0;
+        std::uint32_t slot = 0;
+    };
+    std::vector<ShotCell> shotCells_;
+    double maxShotRadius_ = 0;
+    /// The rows any shot was filed in, whatever its realm, so that a query
+    /// with an absurd radius walks the rows that exist rather than millions.
+    std::uint32_t shotRowMin_ = 0;
+    std::uint32_t shotRowMax_ = 0;
+    struct FiledShot {
+        Entity entity = NULL_ENTITY;
+        /// creditedPlayer() of the shot, resolved once when it is filed.
+        Entity player = NULL_ENTITY;
+        /// Where it was filed and how big. Nothing in a combat phase moves or
+        /// resizes a shot -- they fly in movement, and every shove combat
+        /// deals is to a flower or a mob -- so these ARE its Transform and
+        /// Body for the rest of the phase, read without a lookup.
+        Vec2 position;
+        double radius = 0;
+    };
+    std::vector<FiledShot> filedShots_;
+    /// filedShots_ slot by entity INDEX, or kNoShotSlot. The handle stored in
+    /// the slot is compared on every read, because the world recycles indices.
+    static constexpr std::uint32_t kNoShotSlot = 0xFFFFFFFFu;
+    std::vector<std::uint32_t> shotSlot_;
+
     /// A strike's own broadphase answer and the two lists it builds from it.
     /// Separate from candidates_ because a contact strike is thrown from INSIDE
     /// the loop that is walking candidates_, and one shared scratch buffer

@@ -74,6 +74,18 @@ struct Arena {
     }
     void step(double nowMillis) { step(nowMillis, noContent); }
 
+    /// One tick against the grid GameServer builds, which files every body
+    /// EXCEPT the projectiles: combat has to find those in its own index.
+    void stepWithServerGrid(double nowMillis) {
+        grid.clear();
+        Query<Transform, Body> bodies{world};
+        bodies.without<ProjectileTag>();
+        bodies.each([&](Entity e, Transform& transform, Body& body) {
+            grid.insert(e, Realm::Overworld, transform.position, body.radius);
+        });
+        combat.run(world, grid, noContent, nowMillis, net::kTickSeconds, commands, events);
+    }
+
     double health(Entity e) { return world.get<Health>(e).current; }
 };
 
@@ -1253,6 +1265,54 @@ TEST(shots_from_one_side_pass_through_each_other) {
     CHECK_NEAR(a.health(second), 10.0, 1e-9);
     CHECK(!a.world.has<Dead>(first));
     CHECK(!a.world.has<Dead>(second));
+}
+
+TEST(shots_are_found_when_the_servers_grid_leaves_them_out) {
+    // The server's broadphase files no projectiles; combat files them itself.
+    // Every exchange a shot takes part in has to survive that: a shot landing
+    // on a mob, two opposing shots trading, and one flower's own shots passing
+    // through each other.
+    Arena a;
+    const Entity player = a.player({500, 1000});
+    const Entity mob = a.mob({2000, 1000}, 100.0);
+    const Entity onMob =
+        spawnDurableShot(a, {2000, 1000}, {1000, 0}, 12.0, 500.0, player, player, 10.0);
+    const Entity outgoing =
+        spawnDurableShot(a, {1000, 1000}, {1000, 0}, 12.0, 500.0, player, player, 10.0);
+    const Entity sibling =
+        spawnDurableShot(a, {1002, 1000}, {1000, 0}, 12.0, 500.0, player, player, 10.0);
+    const Entity incoming = spawnDurableShot(a, {1005, 1000}, {-1000, 0}, 4.0, 500.0, mob,
+                                             NULL_ENTITY, 10.0, Team::Hostiles);
+
+    a.stepWithServerGrid(0.0);
+    CHECK_NEAR(a.health(mob), 88.0, 1e-9);
+    CHECK(a.world.has<Dead>(incoming));
+    // The incoming shot's four points went to whichever of the pair it met
+    // first; the pair themselves never touched each other.
+    CHECK_NEAR(a.health(outgoing) + a.health(sibling), 16.0, 1e-9);
+    CHECK(!a.world.has<Dead>(outgoing));
+    CHECK(!a.world.has<Dead>(sibling));
+}
+
+TEST(two_duellists_shots_still_shoot_each_other_down) {
+    // The shortcut that turns away a flower's own shots before any lookup must
+    // not turn away ANOTHER flower's: in the arena two players' volleys trade
+    // exactly as a player's and a mob's do.
+    Arena a;
+    const Entity alice = a.player({500, 1000});
+    const Entity bob = a.player({1500, 1000});
+    a.world.get<Faction>(alice).friendlyFireEnabled = true;
+    a.world.get<Faction>(bob).friendlyFireEnabled = true;
+    const Entity fromAlice =
+        spawnDurableShot(a, {1000, 1000}, {1000, 0}, 12.0, 500.0, alice, alice, 10.0);
+    const Entity fromBob =
+        spawnDurableShot(a, {1005, 1000}, {-1000, 0}, 4.0, 500.0, bob, bob, 10.0);
+    a.world.get<Faction>(fromAlice).friendlyFireEnabled = true;
+    a.world.get<Faction>(fromBob).friendlyFireEnabled = true;
+
+    a.stepWithServerGrid(0.0);
+    CHECK_NEAR(a.health(fromAlice), 6.0, 1e-9);
+    CHECK(a.world.has<Dead>(fromBob));
 }
 
 TEST(a_shot_shoves_the_mob_it_hits_along_its_own_momentum) {

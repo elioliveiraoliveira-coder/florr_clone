@@ -678,7 +678,12 @@ void GameServer::runSystems(double nowMillis, double dt) {
         }
     }
     grid_.clear();
+    // Every body but the projectiles, which combat files in a broadphase of
+    // its own (CombatSystem::fileShots): nothing else that asks this grid
+    // wants a shot, and a flower on a full loadout of gas would otherwise put
+    // a thousand of them into every aggro scan and pickup query around it.
     Query<Transform, Body> afterPlayers{world_};
+    afterPlayers.without<ProjectileTag>();
     afterPlayers.each([&](Entity e, Transform& transform, Body& body) {
         grid_.insert(e, transform.realm, transform.position, body.radius);
     });
@@ -701,6 +706,7 @@ void GameServer::runSystems(double nowMillis, double dt) {
     // make a real overlap invisible for one tick.
     grid_.clear();
     Query<Transform, Body> afterMovement{world_};
+    afterMovement.without<ProjectileTag>();
     afterMovement.each([&](Entity e, Transform& transform, Body& body) {
         grid_.insert(e, transform.realm, transform.position, body.radius);
     });

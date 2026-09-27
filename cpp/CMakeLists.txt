@@ -593,6 +593,14 @@ target_link_libraries(bot_probe PRIVATE flix_server flix_client)
 target_compile_definitions(bot_probe PRIVATE FLIX_TEST_DATA_DIR="${FLIX_DATA_DIR}")
 add_dependencies(bot_probe flix_data)
 
+# What a loadout full of projectile petals costs a server tick, in
+# milliseconds -- the figure behind "one flower on full gas lags everyone".
+# See the file's own header.
+add_executable(projectile_bench tools/projectile_bench.cpp)
+target_link_libraries(projectile_bench PRIVATE flix_server flix_client)
+target_compile_definitions(projectile_bench PRIVATE FLIX_TEST_DATA_DIR="${FLIX_DATA_DIR}")
+add_dependencies(projectile_bench flix_data)
+
 # What one mob type costs the mob layer, in milliseconds -- the figure that
 # says whether a mob is drawing something expensive every frame. See the
 # file's own header.
