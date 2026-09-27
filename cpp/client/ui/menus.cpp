@@ -61,13 +61,14 @@ const std::array<MenuMeta, kMenuCount> kMenus = {{
     {"Craft", Key::C},
     {"Talents", Key::X},
     {"Mob Gallery", Key::V},
-    // The two storefronts, like the three overlay panels below, are reached
-    // from the top icon strip only: they are opened between fights with the
-    // mouse already on the button, so they spend no letter a panel a player
-    // opens mid-fight could use.
+    // The two storefronts, the leaderboard and the three overlay panels below
+    // are reached from the top icon strip only: they are opened between fights
+    // with the mouse already on the button, so they spend no letter a panel a
+    // player opens mid-fight could use -- L in particular is a loadout-preset
+    // bank.
     {"Shop", Key::Unknown},
     {"Skins", Key::Unknown},
-    {"Leaderboard", Key::L},
+    {"Leaderboard", Key::Unknown},
     {"Settings", Key::Escape},
     {"Changelog", Key::Unknown},
     {"Notifications", Key::Unknown},
