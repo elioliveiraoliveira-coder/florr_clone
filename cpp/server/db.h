@@ -20,6 +20,7 @@
 // against the one it was loaded from instead of reshuffling every account.
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -83,6 +84,11 @@ struct PlayerRecord {
 
     /// One entry per loadout slot; an empty slot is a JSON null.
     std::vector<std::optional<StoredItem>> loadout;
+
+    /// Saved loadouts, by loadoutPresetName ("K1".."L0"), each in `loadout`'s
+    /// own shape. A preset never saved has no entry. Stored as `loadoutPresets`
+    /// and only when there is at least one.
+    std::map<std::string, std::vector<std::optional<StoredItem>>> loadoutPresets;
 
     /// The maze's own progression track. XP earned inside the maze lands here
     /// and its talents are bought from here, so a maze run can neither inflate

@@ -95,6 +95,7 @@ const std::array<ControlMeta, kControlCount> kControls = {{
     {"Chat",                  Key::Enter,      MenuId::None},
     {"Extend petals",         Key::Space,      MenuId::None},
     {"Retract petals",        Key::LeftShift,  MenuId::None},
+    {"Swap loadout rows",     Key::R,          MenuId::None},
 }};
 
 /// The two icon groups, which are NOT the same button at two positions.
@@ -392,6 +393,43 @@ void drawKeyLabel(Canvas& canvas, const std::string& label, double x, double y, 
     canvas.setGlobalAlpha(0.85f);
     text(canvas, label, x, y, style);
     canvas.setGlobalAlpha(1.0f);
+}
+
+/// The row K or L puts up in place of the second one while held: one grey tile
+/// per saved loadout of that bank.
+constexpr std::uint32_t kPresetSlotFill = 0x767676u;
+constexpr std::uint32_t kPresetNameFill = 0x9C9C9Cu;
+
+/// One preset's tile: the slot chrome in grey, the preset's name ("K1") set
+/// large and faint across it, and over that the first petal the preset
+/// equips. The petal goes on bare, without a rarity plate -- the tile stands
+/// for a whole loadout, not for that one petal. A preset never saved is the
+/// name alone.
+void drawPresetSlot(Canvas& canvas, const SpriteCache& sprites, Rect r, const std::string& name,
+                    const std::vector<Profile::Slot>& preset, bool highlighted,
+                    double timeSeconds) {
+    TextCaptureScope off(false);
+    drawLoadoutSlot(canvas, r, kPresetSlotFill, highlighted);
+    TextStyle style;
+    style.size = std::round(r.h * 0.42);
+    style.bold = true;
+    style.fill = kPresetNameFill;
+    style.align = Align::Centre;
+    style.baseline = Baseline::Middle;
+    text(canvas, name, r.x + r.w * 0.5, r.y + r.h * 0.5, style);
+
+    const auto face = std::find_if(preset.begin(), preset.end(),
+                                   [](const Profile::Slot& slot) { return !slot.empty(); });
+    if (face == preset.end() || face->petalIndex >= content().petalCount()) return;
+    // One icon at the common size, whatever the rarity: a mythic basic's
+    // five-petal clump would bury the name it is sitting on.
+    const PetalStats stats = content().petalStats(face->petalIndex, Rarity::Common);
+    const double scale = std::min(r.w, r.h) / kItemTileDesign * kItemTileIconScale;
+    canvas.save();
+    canvas.translate(static_cast<float>(r.x + r.w * 0.5), static_cast<float>(r.y + r.h * 0.5));
+    canvas.scale(static_cast<float>(scale), static_cast<float>(scale));
+    drawPetalCluster(canvas, sprites, face->petalIndex, stats.size, 1, 0.0, 0.0, 0.0, timeSeconds);
+    canvas.restore();
 }
 
 /// A whole-pixel box on a canvas's backing store.
@@ -745,6 +783,37 @@ bool MenuSystem::handleKeys(Window& window) {
     // it while a game is running -- it no longer closes an arbitrary panel,
     // and it no longer leaves to the title screen.
 
+    // K and L are held to name a saved loadout, so in game their press is
+    // held back and a release with no number in between stands in for it --
+    // see presetTapArmed_. `pressed`/`boundPressed` are keyPressed and
+    // boundKeyPressed with that substitution made; every action below asks
+    // them, so whichever action the tap reaches is the one the press would
+    // have reached.
+    static constexpr Key kPresetBankKeys[kLoadoutPresetBanks] = {Key::K, Key::L};
+    Key tapped = Key::Unknown;
+    for (int bank = 0; bank < kLoadoutPresetBanks; ++bank) {
+        const Key key = kPresetBankKeys[bank];
+        bool& armed = presetTapArmed_[static_cast<std::size_t>(bank)];
+        if (!inGame_) { armed = false; continue; }
+        if (window.keyPressed(key)) armed = true;
+        if (window.keyDown(key) && presetBankShown_ < 0) presetBankShown_ = bank;
+        if (window.keyReleased(key)) {
+            if (armed) tapped = key;
+            armed = false;
+        }
+    }
+    const auto isBankKey = [&](Key key) {
+        return inGame_ && (key == kPresetBankKeys[0] || key == kPresetBankKeys[1]);
+    };
+    const auto pressed = [&](Key key) {
+        if (key == Key::Unknown) return false;
+        return isBankKey(key) ? key == tapped : window.keyPressed(key);
+    };
+    const auto boundPressed = [&](Key key) {
+        if (key == Key::Unknown) return false;
+        return isBankKey(key) ? key == tapped : boundKeyPressed(window, key);
+    };
+
     // Zoom, and further down the hitbox and mouse-control switches: the three
     // settings a key changes mid-game. All three are the game screen's alone,
     // exactly as the browser binds them inside Game's own keydown -- there is
@@ -753,11 +822,11 @@ bool MenuSystem::handleKeys(Window& window) {
     // tests them in: that order decides which action a key bound to two of
     // them reaches, and this client has to decide it the same way.
     if (inGame_) {
-        if (boundKeyPressed(window, settings_.controlKey(ControlAction::ZoomOut))) {
+        if (boundPressed(settings_.controlKey(ControlAction::ZoomOut))) {
             settings_.zoom = clamp(settings_.zoom - kZoomKeyStep, kMinZoom, kMaxZoom);
             return true;
         }
-        if (boundKeyPressed(window, settings_.controlKey(ControlAction::ZoomIn))) {
+        if (boundPressed(settings_.controlKey(ControlAction::ZoomIn))) {
             settings_.zoom = clamp(settings_.zoom + kZoomKeyStep, kMinZoom, kMaxZoom);
             return true;
         }
@@ -784,16 +853,28 @@ bool MenuSystem::handleKeys(Window& window) {
             Key::Num6, Key::Num7, Key::Num8, Key::Num9, Key::Num0,
         };
         for (int i = 0; i < kLoadoutBarPrimary; ++i) {
-            if (window.keyPressed(kLoadoutKeys[i])) {
-                pendingSwapSlot_ = i;
+            if (!window.keyPressed(kLoadoutKeys[i])) continue;
+            // With K or L held the number names a saved loadout, not a slot:
+            // K+1 loads K1, and Shift+K+1 saves the loadout there instead.
+            for (int bank = 0; bank < kLoadoutPresetBanks; ++bank) {
+                if (!window.keyDown(kPresetBankKeys[bank])) continue;
+                pendingPreset_ = bank * kLoadoutPresetsPerBank + i;
+                pendingPresetSave_ = window.shiftHeld();
+                presetTapArmed_[static_cast<std::size_t>(bank)] = false;
                 return true;
             }
+            pendingSwapSlot_ = i;
+            return true;
+        }
+        if (boundPressed(settings_.controlKey(ControlAction::SwapLoadoutRows))) {
+            pendingRowSwap_ = true;
+            return true;
         }
     }
 
     for (int i = 1; i < kMenuCount; ++i) {
         const Key key = settings_.hotkeys[static_cast<std::size_t>(i)];
-        if (key == Key::Unknown || !window.keyPressed(key)) continue;
+        if (!pressed(key)) continue;
         // The bug button is the only way into the debug panel in the browser,
         // and its key is gated on the same switch.
         if (static_cast<MenuId>(i) == MenuId::Debug && !settings_.showDebugButton) continue;
@@ -802,11 +883,11 @@ bool MenuSystem::handleKeys(Window& window) {
     }
 
     if (inGame_) {
-        if (boundKeyPressed(window, settings_.controlKey(ControlAction::ToggleMouseControls))) {
+        if (boundPressed(settings_.controlKey(ControlAction::ToggleMouseControls))) {
             settings_.useMouseControls = !settings_.useMouseControls;
             return true;
         }
-        if (boundKeyPressed(window, settings_.controlKey(ControlAction::ToggleHitboxes))) {
+        if (boundPressed(settings_.controlKey(ControlAction::ToggleHitboxes))) {
             settings_.render.hitboxes = !settings_.render.hitboxes;
             return true;
         }
@@ -1259,6 +1340,9 @@ bool sameLoadout(const std::vector<Profile::Slot>& a, const std::vector<Profile:
 void MenuSystem::drawLoadoutBar(Canvas& canvas, Window& window, NetClient& net,
                                 const SpriteCache& sprites, double timeSeconds, double dt) {
     const Profile& profile = net.profile();
+    // Whether K or L is down this frame; see presetBankShown_.
+    const int presetBank = inGame_ ? presetBankShown_ : -1;
+    presetBankShown_ = -1;
     // A local edit is shown at once and dropped the moment the server agrees
     // with it -- or the deadline passes, which is how a refused one corrects
     // itself. See expectedLoadout_.
@@ -1288,6 +1372,8 @@ void MenuSystem::drawLoadoutBar(Canvas& canvas, Window& window, NetClient& net,
         pendingCycle_ = 0;
         pendingSwapSlot_ = -1;
         pendingSecondaryDelete_ = false;
+        pendingRowSwap_ = false;
+        pendingPreset_ = -1;
         // And no boxes to ease from. gardn's on_render_skip does the same:
         // a bar that comes back on the next screen puts its tiles straight
         // into their slots instead of flying them in from the last one's.
@@ -1356,6 +1442,25 @@ void MenuSystem::drawLoadoutBar(Canvas& canvas, Window& window, NetClient& net,
             lastSelectTime_ = timeSeconds;
         }
     }
+    if (pendingRowSwap_) {
+        pendingRowSwap_ = false;
+        swapLoadoutRows(net, timeSeconds);
+    }
+    if (pendingPreset_ >= 0) {
+        const int preset = pendingPreset_;
+        pendingPreset_ = -1;
+        if (pendingPresetSave_) {
+            net.saveLoadoutPreset(preset);
+        } else {
+            // Nothing to show ahead of the server this time: the presets live
+            // on the account, and which rarity each petal comes back at is
+            // the server's call. Any edit still being shown early is dropped
+            // with it, so the bar goes straight to the answer rather than
+            // holding a stale guess until its grace runs out.
+            expectedLoadout_.clear();
+            net.loadLoadoutPreset(preset);
+        }
+    }
 
     // The bar's box is not fixed. It moves wholesale between the two screens
     // -- below centre on the title screen, on the bottom edge in game, and at
@@ -1397,6 +1502,10 @@ void MenuSystem::drawLoadoutBar(Canvas& canvas, Window& window, NetClient& net,
     for (int i = 0; i < kLoadoutBarSlots; ++i) {
         if (insideInclusive(layout.slots[static_cast<std::size_t>(i)], mouse)) hovered = i;
     }
+    // While a preset row is up, the second row's petals are hidden under it
+    // and cannot be picked up from where they are not drawn.
+    const bool secondaryHidden = presetBank >= 0;
+    if (secondaryHidden && hovered >= kLoadoutBarPrimary && hovered < kLoadoutBarSlots) hovered = -1;
     if (metrics.secondaryPicker && hovered < 0 && insideInclusive(layout.trash, mouse)) {
         hovered = kLoadoutTrashSlot;
     }
@@ -1405,7 +1514,8 @@ void MenuSystem::drawLoadoutBar(Canvas& canvas, Window& window, NetClient& net,
     // is exactly the condition under which the click is the bar's at all.
     for (int i = 0; i < kLoadoutBarSlots; ++i) {
         const auto at = static_cast<std::size_t>(i);
-        loadoutGrabbable_[at] = i < owned && !shown[at].empty();
+        loadoutGrabbable_[at] =
+            i < owned && !shown[at].empty() && !(secondaryHidden && i >= kLoadoutBarPrimary);
     }
 
     canvas.save();
@@ -1538,6 +1648,14 @@ void MenuSystem::drawLoadoutBar(Canvas& canvas, Window& window, NetClient& net,
                                       : under.y - kLoadoutCapAbove};
     };
     const Vec2 trashCaption{layout.trash.right() + 16.0, layout.trash.y + layout.trash.h * 0.5};
+    // The row-swap key, captioned beside the row it swaps up. In game only,
+    // like the key itself, and not at all when it has been unbound.
+    const Key rowSwapKey = settings_.controlKey(ControlAction::SwapLoadoutRows);
+    const bool showRowSwap = inGame_ && rowSwapKey != Key::Unknown;
+    const std::string rowSwapCaption = std::string("[") + keyName(rowSwapKey) + "]";
+    const Rect firstSecondary = layout.slots[kLoadoutBarPrimary];
+    const Vec2 rowSwapAt{firstSecondary.x - 12.0 * scale,
+                         firstSecondary.y + firstSecondary.h * 0.5};
 
     // In game the bar goes onto the frame as ONE see-through layer, at the
     // minimap's alpha. A global alpha on each call cannot do that: the bar is
@@ -1576,6 +1694,10 @@ void MenuSystem::drawLoadoutBar(Canvas& canvas, Window& window, NetClient& net,
             take({trashCaption.x, trashCaption.y - kLoadoutCapReachY, kLoadoutCapReachX * 2,
                   kLoadoutCapReachY * 2});
         }
+        if (showRowSwap) {
+            take({rowSwapAt.x - kLoadoutCapReachX * 2, rowSwapAt.y - kLoadoutCapReachY,
+                  kLoadoutCapReachX * 2, kLoadoutCapReachY * 2});
+        }
         // A tile reaches past its own box when it rocks, and its counter pill
         // stands proud of its top edge: 0.65 of its side from the centre
         // covers both with room to spare.
@@ -1609,11 +1731,24 @@ void MenuSystem::drawLoadoutBar(Canvas& canvas, Window& window, NetClient& net,
         }
     }
 
+    if (showRowSwap) drawKeyLabel(bar, rowSwapCaption, rowSwapAt.x, rowSwapAt.y, Align::Right);
+
     for (int i = 0; i < kLoadoutBarSlots; ++i) {
         const Rect slot = layout.slots[static_cast<std::size_t>(i)];
-        const bool selected = i >= kLoadoutBarPrimary &&
-                              i - kLoadoutBarPrimary == selectedSecondary_;
-        drawLoadoutSlot(bar, slot, kLoadoutSlotFill, hovered == i || selected);
+        if (secondaryHidden && i >= kLoadoutBarPrimary) {
+            // The preset the number under this tile loads with the held key.
+            // The one the flower is wearing right now is lit, as a slot under
+            // the cursor is.
+            const int preset = presetBank * kLoadoutPresetsPerBank + (i - kLoadoutBarPrimary);
+            const std::vector<Profile::Slot>& saved =
+                profile.presets[static_cast<std::size_t>(preset)];
+            drawPresetSlot(bar, sprites, slot, loadoutPresetName(preset), saved,
+                           sameLoadout(saved, shown), timeSeconds);
+        } else {
+            const bool selected = i >= kLoadoutBarPrimary &&
+                                  i - kLoadoutBarPrimary == selectedSecondary_;
+            drawLoadoutSlot(bar, slot, kLoadoutSlotFill, hovered == i || selected);
+        }
         if (i < kLoadoutBarPrimary) {
             const Vec2 at = captionAt(i);
             drawKeyLabel(bar, kLoadoutKeyCaps[i], at.x, at.y, Align::Centre);
@@ -1641,7 +1776,10 @@ void MenuSystem::drawLoadoutBar(Canvas& canvas, Window& window, NetClient& net,
         drawItemTile(target, sprites, {-anim.w * 0.5, -anim.h * 0.5, anim.w, anim.h}, tile);
         target.restore();
     };
-    for (std::size_t drawn = 0; drawn < queued; ++drawn) drawTile(bar, order[drawn]);
+    for (std::size_t drawn = 0; drawn < queued; ++drawn) {
+        if (secondaryHidden && order[drawn].slot >= kLoadoutBarPrimary) continue;
+        drawTile(bar, order[drawn]);
+    }
 
     if (layer != nullptr) endLayer(canvas, *layer, layerBox, kOverlayPlateAlpha);
     if (onTop >= 0) drawTile(canvas, inHand);
@@ -1662,6 +1800,17 @@ void MenuSystem::swapLoadoutSlots(NetClient& net, double timeSeconds, int a, int
     std::swap(expectedLoadout_[static_cast<std::size_t>(a)],
               expectedLoadout_[static_cast<std::size_t>(b)]);
     net.swapLoadoutSlots(a, b);
+}
+
+void MenuSystem::swapLoadoutRows(NetClient& net, double timeSeconds) {
+    const int owned = static_cast<int>(net.profile().loadout.size());
+    if (owned < kLoadoutBarSlots) return;
+    expectLoadout(net, timeSeconds);
+    for (int i = 0; i < kLoadoutBarPrimary; ++i) {
+        std::swap(expectedLoadout_[static_cast<std::size_t>(i)],
+                  expectedLoadout_[static_cast<std::size_t>(kLoadoutBarPrimary + i)]);
+    }
+    net.swapLoadoutRows();
 }
 
 void MenuSystem::setLoadoutSlot(NetClient& net, double timeSeconds, int slot,

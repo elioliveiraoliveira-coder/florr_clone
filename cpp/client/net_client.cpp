@@ -72,6 +72,9 @@ const char* clientMessageName(std::uint8_t id) {
         case net::ClientMessage::GuildInviteToSquad:  return "guildInviteToSquad";
         case net::ClientMessage::ChangePassword:      return "changePassword";
         case net::ClientMessage::OracleCraft:         return "oracleCraft";
+        case net::ClientMessage::SwapLoadoutRows:     return "swapLoadoutRows";
+        case net::ClientMessage::SaveLoadoutPreset:   return "saveLoadoutPreset";
+        case net::ClientMessage::LoadLoadoutPreset:   return "loadLoadoutPreset";
     }
     return "unknown";
 }
@@ -360,6 +363,28 @@ void NetClient::swapLoadoutSlots(int a, int b) {
     beginMessage(w, net::ClientMessage::SwapLoadout);
     w.u8(static_cast<std::uint8_t>(a));
     w.u8(static_cast<std::uint8_t>(b));
+    send(w);
+}
+
+void NetClient::swapLoadoutRows() {
+    ByteWriter w;
+    beginMessage(w, net::ClientMessage::SwapLoadoutRows);
+    send(w);
+}
+
+void NetClient::saveLoadoutPreset(int preset) {
+    if (preset < 0 || preset >= kLoadoutPresetCount) return;
+    ByteWriter w;
+    beginMessage(w, net::ClientMessage::SaveLoadoutPreset);
+    w.u8(static_cast<std::uint8_t>(preset));
+    send(w);
+}
+
+void NetClient::loadLoadoutPreset(int preset) {
+    if (preset < 0 || preset >= kLoadoutPresetCount) return;
+    ByteWriter w;
+    beginMessage(w, net::ClientMessage::LoadLoadoutPreset);
+    w.u8(static_cast<std::uint8_t>(preset));
     send(w);
 }
 
@@ -732,6 +757,21 @@ void NetClient::handleProfile(ByteReader& reader) {
         if (at < next.mobKills.size()) next.mobKills[at] = count;
     }
     next.oracleCooldownMillis = reader.u32();
+
+    const std::uint8_t presetCount = reader.u8();
+    for (std::uint8_t i = 0; i < presetCount; ++i) {
+        const std::uint8_t preset = reader.u8();
+        const std::uint8_t presetSlots = reader.u8();
+        std::vector<Profile::Slot> slots;
+        slots.reserve(presetSlots);
+        for (std::uint8_t s = 0; s < presetSlots; ++s) {
+            Profile::Slot slot;
+            slot.petalIndex = reader.u16();
+            slot.rarity = clampRarity(reader.u8());
+            slots.push_back(slot);
+        }
+        if (preset < kLoadoutPresetCount) next.presets[preset] = std::move(slots);
+    }
 
     // Replace wholesale only once the whole message decoded. A partially
     // applied inventory is how duplication bugs start.

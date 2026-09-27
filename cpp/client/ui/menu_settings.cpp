@@ -787,6 +787,15 @@ bool SettingsPanel::render(MenuContext& ctx) {
                 if (p.click(box)) rebinding_ = i;
                 p.cy += kKeyBoxHeight + 6.0;
             }
+            // The preset chords are fixed, like the number row they ride on:
+            // K1 is named after the keys that load it, so the keys cannot move.
+            p.cy += 4.0;
+            p.label("Hold K or L + 1-0: load a saved loadout", p.cy + 8.0, 12.0, kPaper, kInk,
+                    2.0);
+            p.cy += 20.0;
+            p.label("Shift + K or L + 1-0: save your loadout there", p.cy + 8.0, 12.0, kPaper,
+                    kInk, 2.0);
+            p.cy += 20.0;
 
             p.cy += 10.0;
             const double btnW = (contentW - 10.0) / 2.0;

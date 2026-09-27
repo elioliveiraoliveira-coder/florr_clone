@@ -219,6 +219,12 @@ private:
     void handleChat(Session&, net::Connection&, ByteReader&);
     void handleSetLoadout(Session&, ByteReader&);
     void handleSwapLoadout(Session&, ByteReader&);
+    void handleSwapLoadoutRows(Session&, net::Connection&);
+    void handleSaveLoadoutPreset(Session&, net::Connection&, ByteReader&);
+    void handleLoadLoadoutPreset(Session&, net::Connection&, ByteReader&);
+    /// True, with the player told why, when the session's body is in the maze,
+    /// which locks the loadout for the run. Every loadout edit asks first.
+    bool loadoutLockedInMaze(Session&);
     void handleCraft(Session&, net::Connection&, ByteReader&);
     /// A guaranteed craft at an oracle. Refused unless the session's body is
     /// alive and standing at one; see NpcSystem::findService.

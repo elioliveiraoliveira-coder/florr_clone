@@ -59,6 +59,10 @@ struct Profile {
     std::uint32_t oracleCooldownMillis = 0;
     std::vector<std::uint32_t> mobKills;
 
+    /// The saved loadouts, by preset number (loadoutPresetName), each in
+    /// `loadout`'s shape. Empty for a preset never saved.
+    std::array<std::vector<Slot>, kLoadoutPresetCount> presets;
+
     std::uint32_t killCount(std::uint16_t mobIndex, Rarity rarity) const {
         const std::size_t at = static_cast<std::size_t>(mobIndex) * kRarityCount + rarityIndex(rarity);
         return at < mobKills.size() ? mobKills[at] : 0;
@@ -325,6 +329,13 @@ public:
     void sendChat(const std::string& text);
     void setLoadoutSlot(int slot, std::uint16_t petalIndex, Rarity rarity);
     void swapLoadoutSlots(int a, int b);
+    /// Every slot of the top row trades places with the one below it.
+    void swapLoadoutRows();
+    /// Saved loadouts, numbered as loadoutPresetName numbers them. Saving
+    /// stores the whole loadout on the account; loading re-equips it, and the
+    /// server answers both with a Notice.
+    void saveLoadoutPreset(int preset);
+    void loadLoadoutPreset(int preset);
     /// Clicks the petal in an active loadout slot.
     ///
     /// What the browser build reaches with U + the slot's number. Only the

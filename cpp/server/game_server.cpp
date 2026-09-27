@@ -96,6 +96,82 @@ void giveToInventory(PlayerRecord& record, std::uint16_t petalIndex, Rarity rari
     record.addItem(rarity, inventoryKey(petalIndex), count);
 }
 
+/// A loadout slot as a preset remembers it: which petal, at which rarity.
+/// None of the per-instance state a worn slot can carry.
+StoredItem presetItem(const std::string& petalType, Rarity rarity) {
+    StoredItem item;
+    item.type = "petal";
+    item.petalType = petalType;
+    item.rarity = rarity;
+    return item;
+}
+
+/// How closely a preset load came to what was saved.
+struct PresetLoad {
+    int downgraded = 0;   ///< equipped, but at a lower rarity than was saved
+    int missing = 0;      ///< not owned at the saved rarity or any below it
+};
+
+/// Re-equips a saved preset onto `record`.
+///
+/// Everything worn goes back into the bag first, so each slot draws from the
+/// whole collection: a petal the preset wants in slot 0 may be sitting in
+/// slot 7 right now. Then two passes. The first seats every petal that is
+/// there at its saved rarity; only then does the second step what is left
+/// down a rarity at a time. In one pass, a slot early on the bar that had to
+/// step down could take the very petal a later slot was saved with, and the
+/// later slot would step down too. A petal owned at no rarity at or below its
+/// saved one leaves its slot empty.
+PresetLoad equipPreset(PlayerRecord& record, const std::vector<std::optional<StoredItem>>& preset) {
+    if (record.loadout.size() < kLoadoutSlots) record.loadout.resize(kLoadoutSlots);
+    const std::vector<std::optional<StoredItem>> previous = record.loadout;
+    for (const std::optional<StoredItem>& worn : previous) {
+        // Under its raw key, not via the index: a petal this build no longer
+        // knows still belongs to the account, and the bag keeps unknown keys.
+        if (worn && !worn->petalType.empty()) {
+            record.addItem(worn->rarity, "petal_" + worn->petalType, 1);
+        }
+    }
+
+    std::vector<std::optional<StoredItem>> next(kLoadoutSlots);
+    std::vector<std::size_t> unseated;
+    PresetLoad result;
+    const std::size_t slots = std::min<std::size_t>(preset.size(), kLoadoutSlots);
+    for (std::size_t i = 0; i < slots; ++i) {
+        if (!preset[i]) continue;
+        const std::uint16_t index = content().petalIndex(preset[i]->petalType);
+        if (index == kInvalidIndex) {
+            ++result.missing;
+        } else if (takeFromInventory(record, index, preset[i]->rarity, 1)) {
+            next[i] = presetItem(preset[i]->petalType, preset[i]->rarity);
+        } else {
+            unseated.push_back(i);
+        }
+    }
+    for (const std::size_t i : unseated) {
+        const std::uint16_t index = content().petalIndex(preset[i]->petalType);
+        for (int tier = rarityIndex(preset[i]->rarity) - 1; tier >= 0 && !next[i]; --tier) {
+            const Rarity rarity = static_cast<Rarity>(tier);
+            if (takeFromInventory(record, index, rarity, 1)) {
+                next[i] = presetItem(preset[i]->petalType, rarity);
+            }
+        }
+        if (next[i]) ++result.downgraded;
+        else ++result.missing;
+    }
+
+    // A slot that ends up holding what it already held keeps its own item,
+    // and with it whatever per-instance state it carried.
+    for (std::size_t i = 0; i < next.size() && i < previous.size(); ++i) {
+        if (next[i] && previous[i] && previous[i]->petalType == next[i]->petalType &&
+            previous[i]->rarity == next[i]->rarity) {
+            next[i] = previous[i];
+        }
+    }
+    record.loadout = std::move(next);
+    return result;
+}
+
 /// What a brand-new account starts with.
 ///
 /// An empty loadout is a flower that cannot fight anything, which makes the
@@ -862,6 +938,13 @@ void GameServer::onMessage(net::Connection& connection, ByteReader& reader) {
         case net::ClientMessage::Chat:          handleChat(*session, connection, reader); break;
         case net::ClientMessage::SetLoadout:    handleSetLoadout(*session, reader); break;
         case net::ClientMessage::SwapLoadout:   handleSwapLoadout(*session, reader); break;
+        case net::ClientMessage::SwapLoadoutRows: handleSwapLoadoutRows(*session, connection); break;
+        case net::ClientMessage::SaveLoadoutPreset:
+            handleSaveLoadoutPreset(*session, connection, reader);
+            break;
+        case net::ClientMessage::LoadLoadoutPreset:
+            handleLoadLoadoutPreset(*session, connection, reader);
+            break;
         case net::ClientMessage::UsePetal:      handleUsePetal(*session, reader); break;
         case net::ClientMessage::Craft:         handleCraft(*session, connection, reader); break;
         case net::ClientMessage::OracleCraft:   handleOracleCraft(*session, connection, reader); break;
@@ -1347,6 +1430,30 @@ void GameServer::sendProfile(Session& session, net::Connection& connection) {
     const double wait = oracleWaitMillis(session.userId);
     w.u32(static_cast<std::uint32_t>(clamp<double>(std::ceil(wait), 0.0, 4294967295.0)));
 
+    // The saved loadouts, for the row the bar shows while K or L is held --
+    // only the ones that exist. The ACCOUNT's, even from inside an arena run:
+    // presets are never the run's.
+    const PlayerRecord* account = database_.findProgress(session.userId);
+    std::vector<std::pair<int, const std::vector<std::optional<StoredItem>>*>> presets;
+    if (account != nullptr) {
+        for (const auto& [name, slots] : account->loadoutPresets) {
+            const int preset = loadoutPresetIndex(name);
+            if (preset >= 0) presets.emplace_back(preset, &slots);
+        }
+    }
+    w.u8(static_cast<std::uint8_t>(presets.size()));
+    for (const auto& [preset, slots] : presets) {
+        w.u8(static_cast<std::uint8_t>(preset));
+        const std::size_t count = std::min<std::size_t>(slots->size(), kLoadoutSlots);
+        w.u8(static_cast<std::uint8_t>(count));
+        for (std::size_t i = 0; i < count; ++i) {
+            const std::optional<StoredItem>& item = (*slots)[i];
+            const std::uint16_t index = item ? content().petalIndex(item->petalType) : kNoPetal;
+            w.u16(index == kInvalidIndex ? kNoPetal : index);
+            w.u8(static_cast<std::uint8_t>(item ? item->rarity : Rarity::Common));
+        }
+    }
+
     connection.send(w);
 }
 
@@ -1608,16 +1715,7 @@ void GameServer::handleSetLoadout(Session& session, ByteReader& reader) {
     if (!reader.ok() || !session.authenticated()) return;
     if (slot >= kLoadoutSlots) return;
     if (petalIndex != kNoPetal && petalIndex >= content().petalCount()) return;
-    if (session.playing() && session.realm == Realm::Maze) {
-        // The maze body plays a DERIVED ring -- the account's, one rarity down
-        // -- and the reference locks the loadout for the run rather than let
-        // an edit made in maze terms be persisted in regular ones.
-        if (net::Connection* connection = listener_.find(session.connection)) {
-            sendNotice(*connection, net::NoticeSeverity::Warning,
-                       "Your loadout is locked inside the maze.");
-        }
-        return;
-    }
+    if (loadoutLockedInMaze(session)) return;
 
     PlayerRecord& record = liveRecord(session);
     if (record.loadout.size() < kLoadoutSlots) record.loadout.resize(kLoadoutSlots);
@@ -1658,13 +1756,7 @@ void GameServer::handleSwapLoadout(Session& session, ByteReader& reader) {
     const std::uint8_t b = reader.u8();
     if (!reader.ok() || !session.authenticated()) return;
     if (a >= kLoadoutSlots || b >= kLoadoutSlots || a == b) return;
-    if (session.playing() && session.realm == Realm::Maze) {
-        if (net::Connection* connection = listener_.find(session.connection)) {
-            sendNotice(*connection, net::NoticeSeverity::Warning,
-                       "Your loadout is locked inside the maze.");
-        }
-        return;
-    }
+    if (loadoutLockedInMaze(session)) return;
 
     PlayerRecord& record = liveRecord(session);
     if (record.loadout.size() < kLoadoutSlots) record.loadout.resize(kLoadoutSlots);
@@ -1675,6 +1767,105 @@ void GameServer::handleSwapLoadout(Session& session, ByteReader& reader) {
     if (net::Connection* connection = listener_.find(session.connection)) {
         sendProfile(session, *connection);
     }
+}
+
+bool GameServer::loadoutLockedInMaze(Session& session) {
+    if (!session.playing() || session.realm != Realm::Maze) return false;
+    // The maze body plays a DERIVED ring -- the account's, one rarity down --
+    // and the reference locks the loadout for the run rather than let an edit
+    // made in maze terms be persisted in regular ones.
+    if (net::Connection* connection = listener_.find(session.connection)) {
+        sendNotice(*connection, net::NoticeSeverity::Warning,
+                   "Your loadout is locked inside the maze.");
+    }
+    return true;
+}
+
+void GameServer::handleSwapLoadoutRows(Session& session, net::Connection& connection) {
+    if (!session.authenticated()) return;
+    if (loadoutLockedInMaze(session)) return;
+
+    PlayerRecord& record = liveRecord(session);
+    if (record.loadout.size() < kLoadoutSlots) record.loadout.resize(kLoadoutSlots);
+    for (std::size_t i = 0; i < kLoadoutActiveSlots; ++i) {
+        std::swap(record.loadout[i], record.loadout[i + kLoadoutActiveSlots]);
+    }
+    database_.markDirty();
+
+    if (session.playing()) applyAccountToSession(session);
+    sendProfile(session, connection);
+}
+
+void GameServer::handleSaveLoadoutPreset(Session& session, net::Connection& connection,
+                                         ByteReader& reader) {
+    const std::uint8_t preset = reader.u8();
+    if (!reader.ok() || !session.authenticated()) return;
+    if (preset >= kLoadoutPresetCount) return;
+    // An arena run wears a scratch ring out of a scratch bag, and that is not
+    // a loadout worth keeping on the account.
+    if (session.arena) {
+        sendNotice(connection, net::NoticeSeverity::Warning,
+                   "Saved loadouts can't be used in the arena.");
+        return;
+    }
+
+    // Saving in the maze is allowed: nothing is edited, and the account's own
+    // ring -- what the player will have back outside -- is what gets saved.
+    PlayerRecord& record = database_.progress(session.userId);
+    std::vector<std::optional<StoredItem>> saved(kLoadoutSlots);
+    for (std::size_t i = 0; i < saved.size() && i < record.loadout.size(); ++i) {
+        const std::optional<StoredItem>& worn = record.loadout[i];
+        if (worn && !worn->petalType.empty()) saved[i] = presetItem(worn->petalType, worn->rarity);
+    }
+    const std::string name = loadoutPresetName(preset);
+    record.loadoutPresets[name] = std::move(saved);
+    database_.markDirty();
+    // The profile carries the presets, and the bar's K/L row is drawn from it.
+    sendProfile(session, connection);
+    sendNotice(connection, net::NoticeSeverity::Good, "Saved loadout " + name + ".");
+}
+
+void GameServer::handleLoadLoadoutPreset(Session& session, net::Connection& connection,
+                                         ByteReader& reader) {
+    const std::uint8_t preset = reader.u8();
+    if (!reader.ok() || !session.authenticated()) return;
+    if (preset >= kLoadoutPresetCount) return;
+    // Loaded against the run's bag, a preset of the account's petals would
+    // find none of them and strip the starter ring bare.
+    if (session.arena) {
+        sendNotice(connection, net::NoticeSeverity::Warning,
+                   "Saved loadouts can't be used in the arena.");
+        return;
+    }
+    if (loadoutLockedInMaze(session)) return;
+
+    PlayerRecord& record = database_.progress(session.userId);
+    const std::string name = loadoutPresetName(preset);
+    // A preset never saved is an empty loadout, and loads as one: every petal
+    // goes back into the bag. Copied either way -- equipPreset rewrites the
+    // record the preset lives in.
+    const auto saved = record.loadoutPresets.find(name);
+    const std::vector<std::optional<StoredItem>> slots =
+        saved != record.loadoutPresets.end() ? saved->second
+                                             : std::vector<std::optional<StoredItem>>(kLoadoutSlots);
+    const PresetLoad result = equipPreset(record, slots);
+    database_.markDirty();
+
+    if (session.playing()) applyAccountToSession(session);
+    sendProfile(session, connection);
+
+    std::string text = "Loaded loadout " + name;
+    if (result.downgraded > 0 || result.missing > 0) {
+        const auto petals = [](int n) { return std::to_string(n) + (n == 1 ? " petal" : " petals"); };
+        text += " (";
+        if (result.downgraded > 0) text += petals(result.downgraded) + " at a lower rarity";
+        if (result.downgraded > 0 && result.missing > 0) text += ", ";
+        if (result.missing > 0) text += petals(result.missing) + " not found";
+        text += ")";
+    }
+    text += ".";
+    sendNotice(connection,
+               result.missing > 0 ? net::NoticeSeverity::Warning : net::NoticeSeverity::Good, text);
 }
 
 void GameServer::handleCraft(Session& session, net::Connection& connection, ByteReader& reader) {

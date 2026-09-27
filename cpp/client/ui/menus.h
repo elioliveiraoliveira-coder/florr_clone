@@ -87,6 +87,10 @@ enum class ControlAction : std::uint8_t {
     Chat,
     ExtendPetals,
     RetractPetals,
+    /// Appended, not slotted in beside the loadout: the settings file stores
+    /// a binding by this enum's number, so a row inserted mid-list would hand
+    /// every later row's saved key to its neighbour.
+    SwapLoadoutRows,
     Count,
 };
 
@@ -937,6 +941,7 @@ private:
     /// the click rather than on the echo -- see expectedLoadout_.
     void expectLoadout(const NetClient&, double timeSeconds);
     void swapLoadoutSlots(NetClient&, double timeSeconds, int a, int b);
+    void swapLoadoutRows(NetClient&, double timeSeconds);
     void setLoadoutSlot(NetClient&, double timeSeconds, int slot, std::uint16_t petalIndex,
                         Rarity rarity);
     void clearLoadoutSlot(NetClient&, double timeSeconds, int slot);
@@ -1024,6 +1029,23 @@ private:
     /// -1 back, +1 forward, 0 none: which way Q/E asked the selection to move.
     int pendingCycle_ = 0;
     bool pendingSecondaryDelete_ = false;
+    /// R: swap the two rows.
+    bool pendingRowSwap_ = false;
+    /// A K/L + number chord: the preset it names, or -1, and whether Shift
+    /// was down, which makes it a save rather than a load.
+    int pendingPreset_ = -1;
+    bool pendingPresetSave_ = false;
+    /// In game, K and L are held down to name a preset, so whatever ELSE they
+    /// are bound to -- mouse controls, the leaderboard -- cannot fire on the
+    /// press: it would go off on every K+1 on the way to the number. Armed on
+    /// the press, spent by a number, and a release that finds it still armed
+    /// was a plain tap and gets the key's old action.
+    std::array<bool, kLoadoutPresetBanks> presetTapArmed_{};
+    /// The bank whose key is held this frame, or -1: its presets take the
+    /// second row's place until it is let go. Set by handleKeys and cleared by
+    /// the bar once drawn, so a frame handleKeys skips -- chat open, a text
+    /// field focused -- shows the loadout rather than a stale preview.
+    int presetBankShown_ = -1;
 
     /// One loadout tile's animated box, in canvas units.
     ///

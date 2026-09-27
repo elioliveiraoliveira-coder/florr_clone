@@ -5,6 +5,8 @@
 // the client predicts movement with the same function the server authorises it
 // with, so straight-line movement reconciles to nothing at all.
 
+#include <string>
+
 #include "shared/core/types.h"
 #include "shared/net/protocol.h"
 
@@ -217,6 +219,33 @@ inline constexpr int kLoadoutSlots = 20;
 /// (`PRIMARY_LOADOUT_SLOTS`, src/server/shared/playerModifiers.ts:36); a ring
 /// built from all twenty would give a second row of petals for free.
 inline constexpr int kLoadoutActiveSlots = 10;
+
+/// Saved loadouts: two banks, K and L, of ten each, one per number key. A
+/// preset is numbered `bank * kLoadoutPresetsPerBank + column`, where column
+/// is the number key's place on the bar -- 1 is column 0, 0 is column 9.
+inline constexpr int kLoadoutPresetBanks = 2;
+inline constexpr int kLoadoutPresetsPerBank = 10;
+inline constexpr int kLoadoutPresetCount = kLoadoutPresetBanks * kLoadoutPresetsPerBank;
+
+/// What a preset is called: the two keys that load it, "K1" to "K0" and "L1"
+/// to "L0". Also the key it is stored under in the account record, so this
+/// spelling is load-bearing -- changing it orphans every saved preset.
+inline std::string loadoutPresetName(int preset) {
+    if (preset < 0 || preset >= kLoadoutPresetCount) return std::string();
+    static constexpr char kBanks[kLoadoutPresetBanks] = {'K', 'L'};
+    const int column = preset % kLoadoutPresetsPerBank;
+    std::string name(1, kBanks[preset / kLoadoutPresetsPerBank]);
+    name += static_cast<char>(column == kLoadoutPresetsPerBank - 1 ? '0' : '1' + column);
+    return name;
+}
+
+/// The preset a loadoutPresetName names, or -1 for anything else.
+inline int loadoutPresetIndex(const std::string& name) {
+    for (int preset = 0; preset < kLoadoutPresetCount; ++preset) {
+        if (loadoutPresetName(preset) == name) return preset;
+    }
+    return -1;
+}
 
 /// TypeScript's neutral petal orbit is 60 world units for a normal 20-unit
 /// player hitbox. When the player grows, only the body's added radius grows

@@ -148,16 +148,25 @@ PlayerRecord playerFromJson(const Json& value) {
     readSkills(value["skills"], record.skills, nullptr);
     record.mazeTotalXp = value["mazeTotalXP"].asDouble(0);
     readSkills(value["mazeSkills"], record.mazeSkills, &record.mazeSkillsExtra);
-    if (value["loadout"].isArray()) {
-        for (const Json& slot : value["loadout"].items()) {
-            if (slot.isObject()) record.loadout.push_back(StoredItem::fromJson(slot));
-            else record.loadout.push_back(std::nullopt);
+    const auto readSlots = [](const Json& slots) {
+        std::vector<std::optional<StoredItem>> out;
+        for (const Json& slot : slots.items()) {
+            if (slot.isObject()) out.push_back(StoredItem::fromJson(slot));
+            else out.push_back(std::nullopt);
+        }
+        return out;
+    };
+    if (value["loadout"].isArray()) record.loadout = readSlots(value["loadout"]);
+    if (value["loadoutPresets"].isObject()) {
+        const Json& presets = value["loadoutPresets"];
+        for (const std::string& name : presets.keys()) {
+            if (presets[name].isArray()) record.loadoutPresets[name] = readSlots(presets[name]);
         }
     }
 
     collectExtras(value, {"totalXP", "stars", "dailyStreak", "lastStreakDate", "renderFlags",
-                          "equippedSkinId", "inventory", "mobKills", "loadout", "skills", "tp",
-                          "mazeTotalXP", "mazeSkills", "mazeTp"},
+                          "equippedSkinId", "inventory", "mobKills", "loadout", "loadoutPresets",
+                          "skills", "tp", "mazeTotalXP", "mazeSkills", "mazeTp"},
                   record.extra);
     return record;
 }
@@ -166,12 +175,18 @@ Json playerToJson(const PlayerRecord& record) {
     Json out = Json::object();
     out["totalXP"] = record.totalXp;
     out["inventory"] = record.inventory;
-    if (!record.loadout.empty()) {
-        Json slots = Json::array();
-        for (const std::optional<StoredItem>& slot : record.loadout) {
-            slots.push(slot ? slot->toJson() : Json());
+    const auto writeSlots = [](const std::vector<std::optional<StoredItem>>& slots) {
+        Json out = Json::array();
+        for (const std::optional<StoredItem>& slot : slots) {
+            out.push(slot ? slot->toJson() : Json());
         }
-        out["loadout"] = slots;
+        return out;
+    };
+    if (!record.loadout.empty()) out["loadout"] = writeSlots(record.loadout);
+    if (!record.loadoutPresets.empty()) {
+        Json presets = Json::object();
+        for (const auto& [name, slots] : record.loadoutPresets) presets[name] = writeSlots(slots);
+        out["loadoutPresets"] = presets;
     }
     if (record.mobKills.isObject() && record.mobKills.size() > 0) out["mobKills"] = record.mobKills;
     const auto writeSkills = [](const SkillSet& set, Json skills) {

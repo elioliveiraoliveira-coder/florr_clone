@@ -22,7 +22,7 @@ namespace flix::net {
 using ConnectionId = std::uint32_t;
 
 /// Bumped whenever any message layout in this file changes.
-inline constexpr std::uint16_t kProtocolVersion = 36;
+inline constexpr std::uint16_t kProtocolVersion = 37;
 
 /// "Not one of the rotating store's cards": a purchase at the full ladder
 /// price. Any other value is a slot index the server checks against the offers
@@ -121,15 +121,30 @@ enum class ClientMessage : std::uint8_t {
                         ///< friendly oracle, which names no NPC on the wire --
                         ///< the server finds the nearest one itself, so a
                         ///< client cannot claim one it is nowhere near.
+    SwapLoadoutRows,    ///< (empty) -- slot i trades places with slot i + 10 for
+                        ///< every column at once: the R key. One message rather
+                        ///< than ten SwapLoadouts, which would each have sent a
+                        ///< whole Profile back.
+    SaveLoadoutPreset,  ///< u8 preset -- copies the account's loadout, both rows,
+                        ///< into saved preset `preset` (loadoutPresetName).
+    LoadLoadoutPreset,  ///< u8 preset -- re-equips a saved preset out of the
+                        ///< bag and the current loadout together, stepping a
+                        ///< petal down a rarity at a time when the saved one is
+                        ///< not there. Resolved server-side in one pass: the
+                        ///< client does not know the presets, and a string of
+                        ///< SetLoadouts could not move a petal between two slots.
 };
 
 enum class ServerMessage : std::uint8_t {
     Welcome = 1,        ///< u16 protocolVersion, u8 accepted, str reason
     AuthResult,         ///< u8 status(AuthStatus), str token, str username, str reason
     Profile,            ///< full account state: xp, level, stars, inventory, loadout,
-                        ///< ... and last, u32 milliseconds until the account
-                        ///< may craft at an oracle again (0 when it may now),
-                        ///< skins, the talent tree and the mob-kill ledger
+                        ///< skins, the talent tree and the mob-kill ledger,
+                        ///< then u32 milliseconds until the account may craft
+                        ///< at an oracle again (0 when it may now), and last
+                        ///< u8 count, { u8 preset, u8 slotCount,
+                        ///< { u16 itemType, u8 rarity }* }* -- the saved
+                        ///< loadouts (loadoutPresetName), only those that exist
     JoinAccepted,       ///< u32 selfNetId, f32 x, f32 y, u32 tick, i64 mazeDay,
                         ///< MapGrid (see below). `mazeDay` is the maze the
                         ///< server is playing, so the client builds the same
