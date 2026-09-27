@@ -255,7 +255,9 @@ bool WorldView::applySnapshot(ByteReader& reader) {
         e.targetPosition = e.position = s.position;
         e.targetAngle = e.angle = s.angle;
         e.needsSnap = true;
-        if (s.kind == net::EntityKind::Mob) {
+        // An NPC plays back like the mob it is built from: a cruising oracle
+        // moves exactly as a bee does, and wants the same smoothing.
+        if (s.kind == net::EntityKind::Mob || s.kind == net::EntityKind::Npc) {
             e.samples.reserve(kMobSampleCapacity);
             e.samples.push_back({sampleMillis, s.position});
         }
@@ -294,7 +296,7 @@ bool WorldView::applySnapshot(ByteReader& reader) {
         // client chase its own lagging output and wobble.
         if (u.mask & net::FieldPosition) e.targetPosition = u.position;
         if (u.mask & net::FieldAngle) e.targetAngle = u.angle;
-        if (e.kind == net::EntityKind::Mob) {
+        if (e.kind == net::EntityKind::Mob || e.kind == net::EntityKind::Npc) {
             // One sample per snapshot whether or not the position changed: a
             // standing mob still has to advance its timeline, or playback
             // replays the last move it made.
@@ -435,8 +437,8 @@ void WorldView::interpolate(double nowMillis, double dtSeconds) {
             e.position = e.targetPosition;
             e.angle = e.targetAngle;
             e.needsSnap = false;
-        } else if (e.kind == net::EntityKind::Mob && playBack(e.samples, renderMillis,
-                                                              e.position)) {
+        } else if ((e.kind == net::EntityKind::Mob || e.kind == net::EntityKind::Npc) &&
+                   playBack(e.samples, renderMillis, e.position)) {
             // Position came from the sample history; facing is handled below.
         } else {
             easeToward(e.position, e.targetPosition, t, isFlower);
@@ -446,8 +448,10 @@ void WorldView::interpolate(double nowMillis, double dtSeconds) {
         // eyes, and easing it makes the pupils swim behind the cursor. A mob's
         // is eased instead of played back: passive AI turns up to 180 degrees
         // in one server step, and replaying that inside a single sample
-        // interval reads as a snap.
-        if (e.kind == net::EntityKind::Mob) {
+        // interval reads as a snap. An NPC's is eased for the same reason: an
+        // idle one glances somewhere new in a single step, and its facing is
+        // what its eye follows.
+        if (e.kind == net::EntityKind::Mob || e.kind == net::EntityKind::Npc) {
             e.angle = lerpAngle(e.angle, e.targetAngle, t);
         } else {
             e.angle = e.targetAngle;

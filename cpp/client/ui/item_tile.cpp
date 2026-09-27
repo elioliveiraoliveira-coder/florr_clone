@@ -70,10 +70,21 @@ constexpr double kBadgeTiltRadians = -14.0 * kPi / 180.0;
 /// past the anchor, which lands it flush with the plate's edge.
 constexpr double kBadgeAnchorX = 26.0;
 constexpr double kBadgeAnchorY = -26.0;
+/// A centred badge, measured off the reference's oracle labels: its MIDDLE sits
+/// here, nine units in from the plate's right edge and seven below its top,
+/// whatever the label's length -- and it tilts the other way from a count,
+/// running down to the right, as those labels do.
+constexpr double kBadgeCentreX = 20.5;
+constexpr double kBadgeCentreY = -23.0;
+constexpr double kBadgeCentredTiltRadians = 23.0 * kPi / 180.0;
 
 constexpr double kHoverAlpha = 0.15;
 constexpr double kDisabledAlpha = 0.6;
 constexpr std::uint32_t kDisabledFill = 0x3A3A3Au;
+/// The greyed tile: the reference's own two greys, face and rim. The petal on
+/// it is drawn in its own colours -- only the plate goes grey.
+constexpr std::uint32_t kGreyedFace = 0x777777u;
+constexpr std::uint32_t kGreyedRim = 0x606060u;
 
 /// The wedge is swept from a 90-unit radius so its straight edges leave the
 /// plate rather than ending inside it; the clip is what makes it a corner.
@@ -385,9 +396,13 @@ void drawItemTile(Canvas& canvas, const SpriteCache& sprites, Rect rect, const I
     const double scale = side / kItemTileDesign;
 
     const bool filled = !tile.empty && tile.petalIndex != kNoPetal;
-    const std::uint32_t base = tile.empty ? tile.emptyFill : rarityColor(tile.rarity);
-    const std::uint32_t border =
-        tile.empty ? tile.emptyBorder : hsvScale(base, kItemTilePlateShade);
+    const bool greyed = filled && tile.greyed;
+    const std::uint32_t base = tile.empty ? tile.emptyFill
+                               : greyed   ? kGreyedFace
+                                          : rarityColor(tile.rarity);
+    const std::uint32_t border = tile.empty ? tile.emptyBorder
+                                 : greyed   ? kGreyedRim
+                                            : hsvScale(base, kItemTilePlateShade);
 
     canvas.save();
     canvas.translate(static_cast<float>(rect.x + rect.w * 0.5),
@@ -543,14 +558,17 @@ void drawItemTile(Canvas& canvas, const SpriteCache& sprites, Rect rect, const I
         badge.fill = kPaper;
         badge.stroke = kInk;
         badge.strokeWidth = badge.size * kTextStrokeScale;
-        badge.align = Align::Right;
-        badge.baseline = Baseline::Top;
+        badge.align = tile.badgeCentred ? Align::Centre : Align::Right;
+        badge.baseline = tile.badgeCentred ? Baseline::Middle : Baseline::Top;
         badge.roundJoin = true;
-        // Rotated about the corner it is anchored to, so the tilt lifts the
-        // text's head to the right and swings its tail down and away.
+        // Rotated about the point it is anchored to: for a count, the corner,
+        // so the tilt lifts the text's head to the right and swings its tail
+        // down and away; for a centred label, its own middle.
         canvas.save();
-        canvas.translate(static_cast<float>(kBadgeAnchorX), static_cast<float>(kBadgeAnchorY));
-        canvas.rotate(static_cast<float>(kBadgeTiltRadians));
+        canvas.translate(static_cast<float>(tile.badgeCentred ? kBadgeCentreX : kBadgeAnchorX),
+                         static_cast<float>(tile.badgeCentred ? kBadgeCentreY : kBadgeAnchorY));
+        canvas.rotate(static_cast<float>(tile.badgeCentred ? kBadgeCentredTiltRadians
+                                                           : kBadgeTiltRadians));
         text(canvas, tile.badge, 0.0, 0.0, badge);
         canvas.restore();
     }

@@ -563,6 +563,7 @@ void PetalSystem::bindTo(World& world) {
     // blast or contact trigger in the reference ever sees a summon, because the
     // grid it queries does not file them.
     mobs_->without<Dead, Pet>();
+    npcs_ = std::make_unique<Query<NpcTag, Transform, Body, Faction>>(world);
 }
 
 void PetalSystem::rebuildAttractionGrid(World& world) {
@@ -572,6 +573,13 @@ void PetalSystem::rebuildAttractionGrid(World& world) {
     // is a candidate for it even though its centre is cells away.
     mobs_->each([&](Entity mob, MobTag&, Transform& transform, Body& body) {
         attractionGrid_.insert(mob, transform.realm, transform.position, body.radius);
+    });
+    // A hostile NPC reaches for petals like the mob it is built from. The
+    // players' own NPCs stay out: a petal bending toward the oracle would be
+    // reaching for something it can never hit.
+    npcs_->each([&](Entity npc, NpcTag&, Transform& transform, Body& body, Faction& faction) {
+        if (faction.team == Team::Players) return;
+        attractionGrid_.insert(npc, transform.realm, transform.position, body.radius);
     });
 }
 
@@ -2516,6 +2524,13 @@ bool PetalSystem::touchesMob(World& world, Realm realm, Vec2 at, double radius) 
         // degenerate overlap with no direction, not a hit.
         if (gap < reach * reach && gap > 0.0) touching = true;
     });
+    npcs_->each([&](Entity, NpcTag&, Transform& transform, Body& body, Faction& faction) {
+        if (touching || faction.team == Team::Players) return;
+        if (transform.realm != realm) return;
+        const double reach = radius + body.radius;
+        const double gap = distanceSq(transform.position, at);
+        if (gap < reach * reach && gap > 0.0) touching = true;
+    });
     return touching;
 }
 
@@ -2526,6 +2541,10 @@ void PetalSystem::collectMobsNear(World& world, Realm realm, Vec2 at, double rad
     const double reachSq = radius * radius;
     mobs_->each([&](Entity e, MobTag&, Transform& transform, Body&) {
         if (transform.realm != realm) return;
+        if (distanceSq(transform.position, at) <= reachSq) out.push_back(e);
+    });
+    npcs_->each([&](Entity e, NpcTag&, Transform& transform, Body&, Faction& faction) {
+        if (faction.team == Team::Players || transform.realm != realm) return;
         if (distanceSq(transform.position, at) <= reachSq) out.push_back(e);
     });
 }

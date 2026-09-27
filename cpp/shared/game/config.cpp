@@ -692,6 +692,36 @@ std::array<double, kRarityCount> parseXp(Ctx& ctx, const Json& src) {
     return xp;
 }
 
+/// The `npc` block: `{ "service": "oracle" }` for the oracle, `{ "team":
+/// "hostile" }` for the target dummy. Both keys are optional -- an empty block
+/// is a friendly NPC that offers nothing -- and a value this build does not
+/// know is reported and read as its default, never as a reason to drop the
+/// NPC: a map that places one would otherwise stand nothing there in silence.
+NpcSpec parseNpcSpec(Ctx& ctx, const Json& owner) {
+    NpcSpec spec;
+    if (!owner.contains("npc")) return spec;
+    const Json& node = owner["npc"];
+    if (!node.isObject()) {
+        ctx.warn(std::string("npc is ") + typeName(node) + ", not an object; the mob is not an NPC");
+        return spec;
+    }
+    spec.present = true;
+    const std::string service = ctx.text(node, "service");
+    spec.service = parseNpcService(service);
+    if (!service.empty() && spec.service == NpcService::None) {
+        ctx.warn("npc service '" + service + "' is not one this build offers; it offers nothing");
+    }
+    const std::string team = ctx.text(node, "team", "players");
+    if (team == "players") spec.team = Team::Players;
+    else if (team == "hostile") spec.team = Team::Hostiles;
+    else if (team == "neutral") spec.team = Team::Neutral;
+    else {
+        ctx.warn("npc team '" + team + "' is not players, hostile or neutral; it stands with the "
+                 "players");
+    }
+    return spec;
+}
+
 MobConfig parseMob(Ctx& ctx, const std::string& id, const Json& src,
                    const std::unordered_map<std::string, std::uint16_t>& mobIds,
                    const std::unordered_map<std::string, std::uint16_t>& petalIds,
@@ -737,6 +767,7 @@ MobConfig parseMob(Ctx& ctx, const std::string& id, const Json& src,
                        groups, groupIds);
     }
 
+    m.npc = parseNpcSpec(ctx, src);
     m.hideRotation = ctx.boolean(src, "hideRotation");
     m.noEggDrop = ctx.boolean(src, "noEggDrop");
     m.reversed = ctx.boolean(src, "reversed");

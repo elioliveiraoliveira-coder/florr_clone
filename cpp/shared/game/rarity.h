@@ -240,6 +240,31 @@ inline double craftSuccessChance(Rarity from) {
     return 0.64 / std::pow(2.0, rarityIndex(from));
 }
 
+/// What an oracle charges for ONE guaranteed upgrade out of `from`: this many
+/// of the same petal at that tier, for one of the next, with no roll at all.
+///
+/// A table rather than a formula because the numbers are the design's own,
+/// stated tier by tier. They run close to doubling -- the forge's odds halve
+/// each tier, so its EXPECTED cost doubles, and the oracle is that price made
+/// certain with a premium on top. Apex is zero: nothing crafts out of it, the
+/// same reason the forge refuses it.
+inline constexpr std::array<int, kRarityCount> kOracleCraftCost = {
+    7,     // common    -> uncommon
+    11,    // uncommon  -> rare
+    19,    // rare      -> epic
+    34,    // epic      -> legendary
+    65,    // legendary -> mythic
+    128,   // mythic    -> ultra
+    253,   // ultra     -> super
+    506,   // super     -> unique
+    1012,  // unique    -> apex
+    0,     // apex: nothing above it
+};
+
+inline constexpr int oracleCraftCost(Rarity from) {
+    return rarityIndex(from) < kRarityCount ? kOracleCraftCost[rarityIndex(from)] : 0;
+}
+
 /// Chance a drop rolls one tier above the mob that dropped it.
 ///
 /// Read only for the one GRADED drop of a kill -- see

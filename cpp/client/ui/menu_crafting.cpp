@@ -128,49 +128,6 @@ std::string percentText(double percent) {
     return out + "%";
 }
 
-/// Stroke-then-fill text whose OUTLINE carries an alpha.
-///
-/// `TextStyle` has no stroke alpha and the reference stroke here is
-/// rgba(0,0,0,0.6), so the glyph path is built and stroked directly. Round
-/// join throughout: every text call site in the browser panel sets it, and a
-/// mitred outline grows spikes off sharp letter corners at width 3.
-void outlinedText(Canvas& canvas, const std::string& s, double x, double y,
-                  const TextStyle& style, double strokeAlpha) {
-    if (s.empty() || !Fonts::ready()) return;
-
-    double penX = x;
-    if (style.align != Align::Left) {
-        const double width = measure(s, style.size, style.bold);
-        penX -= style.align == Align::Centre ? width * 0.5 : width;
-    }
-    double penY = y;
-    switch (style.baseline) {
-        case Baseline::Top: penY += ascent(style.size, style.bold); break;
-        case Baseline::Bottom: penY += descent(style.size, style.bold); break;
-        case Baseline::Alphabetic: break;
-        default:
-            penY += (ascent(style.size, style.bold) + descent(style.size, style.bold)) * 0.5;
-            break;
-    }
-
-    // This painter has always joined the outline round, whatever the style
-    // asked for; paintRun reads the flag, so it is set rather than assumed.
-    TextStyle rounded = style;
-    rounded.roundJoin = true;
-    paintRun(canvas, s, penX, penY, rounded, strokeAlpha);
-}
-
-TextStyle panelLabel(double size, Align align, Baseline baseline) {
-    TextStyle style;
-    style.size = size;
-    style.bold = true;
-    style.align = align;
-    style.baseline = baseline;
-    style.strokeWidth = 3.0;
-    style.roundJoin = true;
-    return style;
-}
-
 bool knownPetal(std::uint16_t petalIndex) {
     return petalIndex != kNoPetal && petalIndex < content().petalCount();
 }

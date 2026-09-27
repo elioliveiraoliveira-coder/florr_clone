@@ -171,6 +171,44 @@ construction:
   XP and talents are `PlayerRecord::mazeTotalXp` / `mazeSkills`, never the
   outside level.
 
+## NPCs
+
+`shared/game/npc.h`, `server/systems/npcs.*`. An NPC is its own entity type —
+`NpcTag` on the server, `net::EntityKind::Npc` on the wire — built out of a
+MOB's config: a mobs.json entry with an `npc` block saying which side it
+stands on and what service it offers. That one entry is two creatures:
+
+* **the NPC**, placed by a map's `npcs` layer (an `npc` object naming it and a
+  `rarity`) or by `spawn_npc` on the admin console. No Motion and no AI, and not
+  a MobTag entity, so nothing that hunts, farms, homes on, drifts or recycles
+  mobs can see it. One whose mob flies like a bee cruises about its home on
+  the bee's own step (`stepBeeCruise`, which the bee AI runs too), leashed by
+  `NpcSystem`; flowers are pushed out of every NPC's body in the player
+  movement pass (`MovementSystem::pushOutOfNpcs`), and nothing else collides
+  with one. It wears its mob's Health, Armor and Afflictions at its
+  tier, and its pool NEVER MOVES — applyDamage lands a hit on it (flash,
+  number, DPS) and takes nothing off. On the players' team it refuses every
+  hit outright (`CombatSystem::canHit`); on another — the target dummy, on the
+  hostiles' — it takes every hit its side allows. `NpcSystem` keeps every map
+  site stocked and sets each NPC's facing -- a cruiser's is the step it just
+  took, a stander's the nearest flower -- which is all its eye needs. The
+  client draws the mob's plate over it, the bar full and in the spawn-shield
+  yellow a flower's turns;
+* **the mob**, from an admin's `spawn` — an ordinary enemy with that entry's
+  stats and AI.
+
+The oracle is the first service: standing within `kNpcServiceReach` of one
+turns the craft key's panel into `OraclePanel` (a single slot, a fixed price
+from `oracleCraftCost`, no roll), and `ClientMessage::OracleCraft` is refused
+by the server unless the body is standing at one — it finds the NPC itself
+rather than trusting the client to name it. A craft buys exactly one upgrade and
+starts the account's wait for its next one (`kOracleCooldownMillis`, half an
+hour). The wait lives in server memory only (`GameServer::oracleReadyAt_`,
+keyed by userId, on the tick clock): a relog keeps it, a restart clears it,
+and nothing of it is written to the database. The profile carries what is left
+of it as a duration, so the client's countdown never depends on its own clock
+agreeing with the server's.
+
 ## Networking
 
 `shared/net/`. `[u32 length][u8 type][payload]`, little-endian, no type tags

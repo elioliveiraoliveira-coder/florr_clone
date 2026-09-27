@@ -339,7 +339,7 @@ never as a collision bug.
 ## The object layers
 
 Annotations are grouped by kind, one Tiled object layer each, so a set can be
-hidden while another is worked on. **These three layer names are read**, unlike
+hidden while another is worked on. **These four layer names are read**, unlike
 the tile layers':
 
 | layer | holds |
@@ -347,6 +347,7 @@ the tile layers':
 | `spawns` | mob bands and mob regions — **polygons** |
 | `player_spawns` | doors: where a player arrives — rectangles |
 | `teleporters` | pads: where a player leaves — points |
+| `npcs` | NPCs: who stands where — points |
 
 The game never sees the grouping beyond the kind: every reader filters by kind
 before it looks at order, so only the order *within* a layer is observable, and
@@ -606,6 +607,47 @@ A pad naming no map is scenery: it charges up and goes nowhere, and that is
 reported at load rather than at the moment a player stands on it. Stepping
 through one is a `RealmChange`, because each map is its own coordinate space —
 as is a respawn that crosses maps.
+
+### `npcs` — NPCs
+
+An `npc` object stands one NPC in the world, where it is drawn:
+
+| property | meaning |
+| --- | --- |
+| `npc` | **which** NPC: the mobs.json id of a mob that has an `npc` block — `oracle`, `target_dummy` |
+| `rarity` | the tier it stands at: its size, the pool on its plate and the tier the plate names. `common` when left out; spelled like mobs.json's tiers, in any case |
+
+An NPC is a mob's artwork, size and tier standing in the world without being a
+mob: nothing that hunts, farms or recycles mobs sees it, flowers cannot walk
+through it, and its health bar is drawn **invulnerable** — full, in the yellow
+a flower's bar turns under spawn protection, because its pool never moves. An
+NPC whose mob flies like a bee (`bee_ai`, as the oracle's does) cruises about
+its point the way a bee does, on a leash that turns it back a little over 250
+units out, and looks where it is flying; any other stands still and turns to
+watch the nearest flower. Which side it is on is the mob's business, in its mobs.json `npc` block:
+
+| `npc` block | side | what hits it |
+| --- | --- | --- |
+| `{ "service": "oracle" }` | the players' (the default) | nothing — every hit is refused |
+| `{ "team": "hostile" }` | the hostiles' | every hit a flower lands: it flashes, it is numbered and a dummy counts its DPS, and it loses nothing |
+
+The server keeps one standing on every object here — at start-up, and again on
+the next tick if anything removed it. Draw it as a **point** (Tiled's *Insert
+Point*) where its middle should be — for a cruiser, the middle of where it
+flies; the server pushes it clear of a wall its body would overlap. The load line lists every
+NPC a map places (`npcs: oracle`), and an `npc` that is not in mobs.json, or
+has no `npc` block, is reported and nothing stands there.
+
+What a service does is the mob's business too: `oracle` turns the craft panel
+of any flower within reach of it into a guaranteed craft at a fixed price
+(`oracleCraftCost` in `cpp/shared/game/rarity.h`) — one upgrade per craft,
+and one craft per account every 30 minutes (held in server memory, so a
+restart clears every wait). The same mob is still an
+ordinary enemy to `spawn oracle <rarity>` on the admin console; `spawn_npc
+<npc> [rarity]` stands the NPC where the admin is, which is how the maze and
+the arena — which have no map to draw on — get one.
+
+`garden.tmj` places one common oracle just east of its door.
 
 ## The map's own properties
 

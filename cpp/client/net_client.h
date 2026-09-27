@@ -53,6 +53,10 @@ struct Profile {
     /// Kills per mob and tier, flattened as `mobIndex * kRarityCount + tier`.
     /// A dense grid rather than a map: the gallery reads every cell of it once
     /// per frame, and there are only a few hundred.
+    /// Milliseconds the account still had to wait for its next oracle craft
+    /// when this profile was sent; 0 when it may craft now. A duration, not a
+    /// deadline: NetClient turns it into one on its own clock as it arrives.
+    std::uint32_t oracleCooldownMillis = 0;
     std::vector<std::uint32_t> mobKills;
 
     std::uint32_t killCount(std::uint16_t mobIndex, Rarity rarity) const {
@@ -160,6 +164,24 @@ struct CraftOutcome {
     /// The sub-batch tail the pool could not spend, 0-4. The ring keeps this
     /// many slots filled when nothing was crafted.
     int petalsReturned = 0;
+    std::string reason;
+};
+
+/// The outcome of the last oracle craft, for the oracle panel's pulse.
+///
+/// Its own record rather than a CraftOutcome: the two panels share the craft
+/// key and the card, and a result either could read would land in whichever
+/// one happened to be showing when it arrived.
+struct OracleOutcome {
+    bool pending = false;      ///< a result arrived that the panel has not read
+    bool success = false;
+    std::uint16_t petalIndex = 0;
+    /// The tier MADE on a success; the tier offered on a refusal.
+    Rarity rarity = Rarity::Common;
+    /// How many upgrades were bought -- always all of them, or none.
+    int crafted = 0;
+    /// How many petals went in.
+    std::uint32_t spent = 0;
     std::string reason;
 };
 
@@ -308,6 +330,12 @@ public:
     /// the bar sends it and waits to see what the snapshot says.
     void usePetal(int slot);
     void requestCraft(std::uint16_t petalIndex, Rarity rarity, int count);
+    /// Buys one guaranteed upgrade of this petal from the oracle the body is
+    /// standing at, for oracleCraftCost(rarity) of it.
+    void requestOracleCraft(std::uint16_t petalIndex, Rarity rarity);
+    /// How long until the account may craft at an oracle again, counted down
+    /// on this client's clock from the last profile; 0 when it may now.
+    double oracleCooldownRemainingMillis() const;
     void requestRespawn();
     void sendPing();
     /// Buys the NEXT tier of a branch. The server refuses anything else, so
@@ -503,6 +531,8 @@ public:
     /// The last craft result. The panel clears `pending` once it has started
     /// the animation for it.
     CraftOutcome& craftOutcome() { return craftOutcome_; }
+    /// The last oracle result, read and cleared the same way.
+    OracleOutcome& oracleOutcome() { return oracleOutcome_; }
 
     /// The last purchase or code redemption. The shop panel clears `pending`
     /// once it has raised the modal for it.
@@ -574,6 +604,7 @@ private:
     void handleDied(ByteReader&);
     void handleRevived(ByteReader&);
     void handleCraftResult(ByteReader&);
+    void handleOracleResult(ByteReader&);
     void handleShopResult(ByteReader&);
     void handleChangePasswordResult(ByteReader&);
     void handleLeaderboard(ByteReader&);
@@ -651,6 +682,10 @@ private:
     GuildState guild_;
     GuildInvite guildInvite_;
     CraftOutcome craftOutcome_;
+    OracleOutcome oracleOutcome_;
+    /// When, on this client's steady clock, the oracle wait the last profile
+    /// reported runs out.
+    double oracleReadyAtMillis_ = 0;
     ShopOutcome shopOutcome_;
     PasswordOutcome passwordOutcome_;
 

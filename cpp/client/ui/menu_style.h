@@ -142,4 +142,17 @@ struct ChipStyle {
 };
 void chip(Canvas&, Rect, const std::string& label, bool hovered, const ChipStyle& = {});
 
+// ---------------------------------------------------------------------------
+// Labels
+// ---------------------------------------------------------------------------
+
+/// Stroke-then-fill text whose OUTLINE carries an alpha -- the forge's and the
+/// oracle's labels, which are stroked at 60% where every other panel strokes
+/// solid black. Always round-joined; see the definition.
+void outlinedText(Canvas&, const std::string& s, double x, double y, const TextStyle& style,
+                  double strokeAlpha);
+
+/// The bold, 3-unit-outlined label style those two panels set every line in.
+TextStyle panelLabel(double size, Align align, Baseline baseline);
+
 } // namespace flix::ui

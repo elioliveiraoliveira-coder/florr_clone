@@ -189,6 +189,8 @@ private:
         Query<MobTag, Transform, Motion, Body> mobs;
         Query<ProjectileTag, Transform, Motion, Projectile> projectiles;
         Query<MobTag, Transform, Faction, Health> mobTargets;
+        /// NPCs a guided shot may lock onto: the ones not on the players' side.
+        Query<NpcTag, Transform, Faction> npcTargets;
         /// The separation pass wants every mob that has a place and a size,
         /// whether or not it is a mover: a nest still occupies its ground.
         /// MobType rides along for the level of detail: a boss is
@@ -197,6 +199,16 @@ private:
         /// LOD is measured against every flower, dead ones included -- a
         /// player about to respawn is still standing there watching.
         Query<PlayerTag, Transform> playerPositions;
+        /// The NPCs a flower cannot walk through.
+        Query<NpcTag, Transform, Body> npcBodies;
+    };
+
+    /// One NPC's body, flattened out of the ECS once per player pass: a handful
+    /// of them, each tested against every flower.
+    struct NpcDisc {
+        Vec2 position;
+        double radius = 0;
+        Realm realm = Realm::Overworld;
     };
 
     /// A homing candidate, flattened out of the ECS once per tick. Projectiles
@@ -237,6 +249,10 @@ private:
     /// is the last thing the reference does to a flower's position, after
     /// everything else that tick has had its say.
     void stepTeleporters(World& world, double nowMillis, double dt);
+    /// Puts a flower back outside every NPC body it has walked into. NPCs are
+    /// solid to flowers -- the one thing that collides with them -- and they
+    /// do not give way: the flower is moved, the NPC stays on its mark.
+    void pushOutOfNpcs(const Terrain& terrain, Transform& transform, double radius) const;
     void moveMobs(World& world, const Terrain& terrain, double nowMillis, double dt);
     void moveProjectiles(World& world, const Terrain& terrain, double dt);
 
@@ -282,6 +298,8 @@ private:
     World* boundWorld_ = nullptr;
     std::optional<Queries> queries_;
     std::vector<SeekTarget> seekTargets_;
+    /// Rebuilt at the top of every player pass. See pushOutOfNpcs().
+    std::vector<NpcDisc> npcDiscs_;
     bool seekTargetsReady_ = false;
 
     /// Separation scratch, reused every tick so a steady state allocates

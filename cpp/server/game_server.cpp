@@ -28,6 +28,7 @@
 #include "server/systems/petals.h"
 #include "server/systems/spawning.h"
 #include "server/systems/mode_spawning.h"
+#include "server/systems/npcs.h"
 #include "shared/game/config.h"
 #include "shared/game/shop.h"
 #include "shared/game/skin_format.h"
@@ -248,6 +249,18 @@ bool GameServer::start(const ServerConfig& config, std::string& errorOut) {
     modes_ = std::make_unique<ModeSpawner>();
     loot_ = std::make_unique<LootSystem>();
     if (!loot_->loadTables(content(), config.dataDir + "/mob_drops.json", errorOut)) return false;
+    // The NPCs the maps ask for, resolved against the content once. A site
+    // that names nothing placeable is reported rather than fatal: the map
+    // still plays, it is only missing whoever was meant to stand there.
+    npcs_ = std::make_unique<NpcSystem>();
+    npcs_->seed(config.worldSeed ^ 0x0DAC1E5EEDull);
+    {
+        std::vector<std::string> npcWarnings;
+        npcs_->loadSites(worldMaps_, content(), npcWarnings);
+        for (const std::string& warning : npcWarnings) {
+            std::fprintf(stderr, "[map] %s\n", warning.c_str());
+        }
+    }
 
     // Wire ids are unique across the whole server, so the id space belongs
     // here rather than to any one system. A system left unwired still
@@ -257,6 +270,7 @@ bool GameServer::start(const ServerConfig& config, std::string& errorOut) {
     mobAi_->allocateNetId = [this] { return netIds_.next(); };
     spawning_->netIds = &netIds_;
     loot_->netIds = &netIds_;
+    npcs_->netIds = &netIds_;
     // One table, two readers: what a corpse pays XP for and what it reserves
     // its drops for must be the same answer. rebuildSquadIndex() refreshes it
     // once a tick; the pointer never moves.
@@ -304,6 +318,9 @@ bool GameServer::start(const ServerConfig& config, std::string& errorOut) {
     // of the first tick, and a deadline stamped from a zero clock is one that
     // has already passed.
     clockMillis_ = monotonicMillis();
+    // The maps' NPCs are part of the maps, so they stand from boot rather than
+    // from whenever the first player happens to arrive.
+    npcs_->placeMissing(world_, *terrain_, content(), clockMillis_);
     running_ = true;
     return true;
 }
@@ -586,6 +603,8 @@ void GameServer::runSystems(double nowMillis, double dt) {
     // The arena and the maze are filled whole rather than by viewport, and only
     // while someone is in them.
     modes_->run(world_, *terrain_, content(), *spawning_, grid_, humanPlayers_, rng_, nowMillis);
+    // Every flower, bots included, is somebody an NPC can turn to look at.
+    npcs_->run(world_, *terrain_, content(), activePlayers_, nowMillis);
     loot_->run(world_, grid_, content(), rng_, nowMillis, dt, commands_, events_);
 
     // A pickup is a world event; owning it is an account fact. The loot system
@@ -844,6 +863,7 @@ void GameServer::onMessage(net::Connection& connection, ByteReader& reader) {
         case net::ClientMessage::SwapLoadout:   handleSwapLoadout(*session, reader); break;
         case net::ClientMessage::UsePetal:      handleUsePetal(*session, reader); break;
         case net::ClientMessage::Craft:         handleCraft(*session, connection, reader); break;
+        case net::ClientMessage::OracleCraft:   handleOracleCraft(*session, connection, reader); break;
         case net::ClientMessage::Respawn:       handleRespawn(*session); break;
         case net::ClientMessage::Ping:          handlePing(connection, reader); break;
         case net::ClientMessage::UpgradeSkill:  handleUpgradeSkill(*session, connection, reader); break;
@@ -1272,6 +1292,12 @@ void GameServer::sendProfile(Session& session, net::Connection& connection) {
     }
     w.patchU16(killCountAt, killCount);
 
+    // How long until the account may use an oracle again, as a DURATION: the
+    // client's clock is not the server's, so a deadline would arrive already
+    // wrong by whatever the two disagree by.
+    const double wait = oracleWaitMillis(session.userId);
+    w.u32(static_cast<std::uint32_t>(clamp<double>(std::ceil(wait), 0.0, 4294967295.0)));
+
     connection.send(w);
 }
 
@@ -1675,6 +1701,94 @@ void GameServer::handleCraft(Session& session, net::Connection& connection, Byte
     w.str(crafted > 0 ? "" : "The craft failed.");
     connection.send(w);
     sendProfile(session, connection);
+}
+
+void GameServer::handleOracleCraft(Session& session, net::Connection& connection,
+                                  ByteReader& reader) {
+    const std::uint16_t petalIndex = reader.u16();
+    const Rarity rarity = clampRarity(reader.u8());
+    if (!reader.ok() || !session.authenticated()) return;
+
+    const auto refuse = [&](const std::string& reason) {
+        ByteWriter w;
+        w.u8(static_cast<std::uint8_t>(net::ServerMessage::OracleResult));
+        w.boolean(false);
+        w.u16(petalIndex);
+        w.u8(static_cast<std::uint8_t>(rarity));
+        w.u16(0);
+        w.u32(0);
+        w.str(reason);
+        connection.send(w);
+    };
+
+    // The oracle is a creature standing somewhere, so the one thing a client
+    // cannot do is ask it from anywhere else. Where the body IS decides, and
+    // the NPC is found here rather than named on the wire: a client that could
+    // name one could name one it is nowhere near. A corpse is not standing at
+    // anything -- the death card is up, and the forge is still in the menu.
+    const bool standing = session.playing() && world_.isAlive(session.entity) &&
+                          !world_.has<Dead>(session.entity);
+    const Transform* body = standing ? world_.tryGet<Transform>(session.entity) : nullptr;
+    if (body == nullptr) {
+        refuse("You need to be standing at an oracle.");
+        return;
+    }
+    if (npcs_->findService(world_, NpcService::Oracle, body->position, body->realm,
+                           kNpcServiceReach + kNpcServiceSlack) == NULL_ENTITY) {
+        refuse("You are too far from the oracle.");
+        return;
+    }
+
+    // Once per half hour, per ACCOUNT -- not per body or per connection.
+    const double wait = oracleWaitMillis(session.userId);
+    if (wait > 0.0) {
+        refuse(oracleCooldownText(wait));
+        return;
+    }
+
+    // One upgrade, no roll, nothing returned: the price is the whole
+    // transaction. Apex costs zero because nothing crafts out of it, which is
+    // what refuses it here.
+    const int cost = oracleCraftCost(rarity);
+    if (cost <= 0 || petalIndex >= content().petalCount()) {
+        refuse("The oracle cannot craft that.");
+        return;
+    }
+    PlayerRecord& record = liveRecord(session);
+    if (!takeFromInventory(record, petalIndex, rarity, cost)) {
+        refuse("Not enough petals.");
+        return;
+    }
+    const Rarity made = upgradeRarity(rarity);
+    giveToInventory(record, petalIndex, made, 1);
+    oracleReadyAt_[session.userId] = clockMillis_ + kOracleCooldownMillis;
+    database_.markDirty();
+
+    // A super bought is announced exactly as a super rolled is: the line is
+    // about what exists now, not about how lucky anyone got.
+    announceRareCraft(session, petalIndex, made);
+
+    ByteWriter w;
+    w.u8(static_cast<std::uint8_t>(net::ServerMessage::OracleResult));
+    w.boolean(true);
+    w.u16(petalIndex);
+    w.u8(static_cast<std::uint8_t>(made));
+    w.u16(1);
+    w.u32(static_cast<std::uint32_t>(cost));
+    w.str("");
+    connection.send(w);
+    // The profile carries the new wait, which is what turns the panel's line
+    // red the moment the upgrade has landed.
+    sendProfile(session, connection);
+}
+
+double GameServer::oracleWaitMillis(const std::string& userId) {
+    const auto found = oracleReadyAt_.find(userId);
+    if (found == oracleReadyAt_.end()) return 0.0;
+    const double wait = found->second - clockMillis_;
+    if (wait > 0.0) return wait;
+    oracleReadyAt_.erase(found);
+    return 0.0;
 }
 
 void GameServer::announceRareCraft(const Session& session, std::uint16_t petalIndex,

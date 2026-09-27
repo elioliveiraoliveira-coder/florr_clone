@@ -1,0 +1,89 @@
+#pragma once
+// NPCs: creatures that stand in the world without being mobs.
+//
+// An NPC is a general entity type of its own -- NpcTag on the server,
+// net::EntityKind::Npc on the wire -- but it is built out of a MOB. Its
+// artwork, its size ladder, its tier and its name are a mobs.json entry, and
+// what makes that entry an NPC is its `npc` block: which side it stands on and
+// what it offers. The same entry is still an ordinary mob to everything else:
+// `spawn oracle rare` puts a hostile one in the world, with that entry's stats
+// and AI, and it fights like any other mob.
+//
+// An NPC is placed by a map (an `npc` object on its `npcs` layer) or by an
+// admin's `spawn_npc`. It is not a MobTag entity, so no system that hunts,
+// farms, homes on, drifts or recycles mobs ever sees it -- bots do not farm
+// it, pets do not chase it, petals are not attracted to it and the
+// unseen-despawn sweep does not recycle it.
+//
+// It carries its mob's Health, armour and afflictions, and its pool NEVER
+// MOVES: that is the one rule the damage path adds (CombatSystem::applyDamage).
+// Which hits reach it at all is its side's business --
+//
+//   * on the players' team (the oracle) it refuses every hit outright;
+//   * on any other (the target dummy, on the hostiles') it takes every hit its
+//     side's rules allow, flashes, is numbered and counted, and loses nothing.
+//
+// The client draws the mob's plate over it with the bar in its invulnerable
+// state, which is what says both of those at a glance.
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <string>
+
+namespace flix {
+
+/// What an NPC does for a flower that walks up to it.
+///
+/// Appended to, never reordered: the value travels nowhere, but a mobs.json
+/// `npc.service` string resolves to it and a test names them.
+enum class NpcService : std::uint8_t {
+    None = 0,
+    /// Guaranteed crafts: a fixed number of one petal for one of the next
+    /// tier, every time. See oracleCraftCost() in rarity.h.
+    Oracle,
+};
+
+/// The service a mobs.json `npc.service` string names, or None for text this
+/// build does not know. Case-sensitive, like every other id in that file.
+inline NpcService parseNpcService(const std::string& name) {
+    if (name == "oracle") return NpcService::Oracle;
+    return NpcService::None;
+}
+
+/// How close a flower has to be to an NPC to use it: from the NPC's SKIN to the
+/// flower's centre, so a big NPC is reached at its edge rather than its middle.
+///
+/// The CLIENT switches the crafting panel over at this distance; the server
+/// allows kNpcServiceSlack on top of it, because what the client measured is
+/// its own drawn position -- eased, and a snapshot old -- and a flower that
+/// the panel said was close enough must not be refused at the server for
+/// having drifted a few units on the way there.
+inline constexpr double kNpcServiceReach = 250.0;
+inline constexpr double kNpcServiceSlack = 150.0;
+
+/// How long an account waits between two oracle crafts. One guaranteed
+/// upgrade per half hour: the oracle is a thing to come back to, not a second
+/// forge that never misses. Per account, so a relog does not reset it; held
+/// in the server's memory only, so a restart does (GameServer::oracleReadyAt_).
+inline constexpr double kOracleCooldownMillis = 30.0 * 60.0 * 1000.0;
+
+/// "You'll be able to craft again in 27 minutes" -- the one sentence both ends
+/// say it in: the server when it refuses, the panel where its line of text
+/// goes. Rounded UP, so the last minute reads "1 minute" and never "0".
+inline std::string oracleCooldownText(double remainingMillis) {
+    const long minutes = std::max(1L, static_cast<long>(std::ceil(remainingMillis / 60000.0)));
+    return "You'll be able to craft again in " + std::to_string(minutes) +
+           (minutes == 1 ? " minute" : " minutes");
+}
+
+/// How far off an NPC notices a flower and turns to look at it. Past this it
+/// glances about on its own.
+inline constexpr double kNpcWatchRange = 900.0;
+
+/// How long an idle NPC holds one glance before picking another, and the
+/// spread on top: a fixed beat reads as a clock rather than as a creature.
+inline constexpr double kNpcGlanceMillis = 2200.0;
+inline constexpr double kNpcGlanceSpreadMillis = 2600.0;
+
+} // namespace flix

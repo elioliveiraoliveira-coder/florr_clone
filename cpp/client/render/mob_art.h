@@ -19,6 +19,12 @@
 // their claws and legs move with a walk phase, which a static document cannot
 // do.
 //
+// The oracle is here for the same reason, and one more: its ten tendrils wave,
+// and its EYE looks at something. Where it looks is not a fact about the
+// picture -- it is a fact about the creature, eased frame to frame by the
+// world renderer exactly as a flower's pupils are -- so it arrives as an
+// attribute (`gaze`) rather than out of the clock.
+//
 // The leech is here for a third reason. Its body is not a row of beads, it is
 // one smooth tube, and the reference draws it by stroking a single polyline
 // through every segment's centre. Our renderer draws one entity at a time and
@@ -39,12 +45,13 @@
 #include <string>
 
 #include "canvas.h"
+#include "shared/core/types.h"
 
 namespace flix {
 
 /// Which painter an `image` marker names. `None` is every ordinary mob.
 enum class MobArt : std::uint8_t { None, Rock, Cactus, Sandstorm, Scorpion, Crab, LeechHead,
-                                   LeechBody, Spider };
+                                   LeechBody, Spider, Oracle };
 
 /// How fast a walk cycle runs, in radians of phase per second.
 ///
@@ -75,6 +82,12 @@ struct MobArtAttributes {
     /// painters; here they stay in mobs.json so one file still answers what a
     /// mob is coloured, whichever way its picture is made.
     std::uint32_t baseColor = 0xFFFFFFu;
+    /// Where the mob's eye is looking, in the art's own frame, as a fraction
+    /// of how far its pupil can travel: (1, 0) is hard along +X, which is the
+    /// way every drawing faces. Only the oracle has an eye that reads it. A
+    /// call site with no creature behind it -- a bestiary tile -- leaves the
+    /// default, which is the pose the oracle's reference art is drawn in.
+    Vec2 gaze{1.0, 0.0};
 };
 
 /// Paints `art` about the origin. `None` draws nothing.

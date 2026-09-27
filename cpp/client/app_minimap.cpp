@@ -293,19 +293,31 @@ const Canvas* App::minimapStatic(bool rarityGlow) {
     static const std::vector<MapElement> kNoElements;
     for (const MapElement& element :
          annotations != nullptr ? annotations->elements() : kNoElements) {
-        if (element.kind != MapElementKind::Teleporter) continue;
+        const bool pad = element.kind == MapElementKind::Teleporter;
+        const bool npc = element.kind == MapElementKind::Npc;
+        if (!pad && !npc) continue;
         const Vec2 dot = toBox(element.centre());
         // Strictly inside, as the reference's test is: a zero-sized teleporter
         // sitting on the box's own edge is a dot the browser does not draw,
         // and a tolerance here would paint a clipped one it never shows.
         if (dot.x <= 0 || dot.x >= kMinimapSize || dot.y <= 0 || dot.y >= kMinimapSize) continue;
         // Green, never gold: gold marks a teleporter that hands the player to
-        // another server, and this build has no such thing to mark.
-        setFill(walls, 0x00FF00u);
-        walls.fillCircle(static_cast<float>(dot.x), static_cast<float>(dot.y), 3.0f);
+        // another server, and this build has no such thing to mark. An NPC is
+        // marked in its own mob's colour -- the oracle's flower yellow -- and
+        // a size up, because it is somewhere a player goes on purpose.
+        std::uint32_t color = 0x00FF00u;
+        float radius = 3.0f;
+        if (npc) {
+            const std::uint16_t mob = content().mobIndex(element.npcId);
+            if (mob == kInvalidIndex) continue;
+            color = static_cast<std::uint32_t>(content().mob(mob).colorRgba >> 8);
+            radius = 4.0f;
+        }
+        setFill(walls, color);
+        walls.fillCircle(static_cast<float>(dot.x), static_cast<float>(dot.y), radius);
         setStroke(walls, kInk);
         walls.setLineWidth(1.0f);
-        walls.strokeCircle(static_cast<float>(dot.x), static_cast<float>(dot.y), 3.0f);
+        walls.strokeCircle(static_cast<float>(dot.x), static_cast<float>(dot.y), radius);
     }
 
     // The two bakes the corner shows: the ground, then the wall layer laid

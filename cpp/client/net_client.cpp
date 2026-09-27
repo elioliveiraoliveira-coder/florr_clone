@@ -71,6 +71,7 @@ const char* clientMessageName(std::uint8_t id) {
         case net::ClientMessage::GuildSquadAll:       return "guildSquadAll";
         case net::ClientMessage::GuildInviteToSquad:  return "guildInviteToSquad";
         case net::ClientMessage::ChangePassword:      return "changePassword";
+        case net::ClientMessage::OracleCraft:         return "oracleCraft";
     }
     return "unknown";
 }
@@ -103,6 +104,7 @@ const char* serverMessageName(std::uint8_t id) {
         case net::ServerMessage::MazeInfo:            return "mazeInfo";
         case net::ServerMessage::RealmChange:         return "realmChange";
         case net::ServerMessage::ChangePasswordResult: return "changePasswordResult";
+        case net::ServerMessage::OracleResult:        return "oracleResult";
     }
     return "unknown";
 }
@@ -274,6 +276,8 @@ void NetClient::forgetAccount() {
     guild_ = GuildState{};
     guildInvite_ = GuildInvite{};
     craftOutcome_ = CraftOutcome{};
+    oracleOutcome_ = OracleOutcome{};
+    oracleReadyAtMillis_ = 0;
     shopOutcome_ = ShopOutcome{};
     passwordOutcome_ = PasswordOutcome{};
     view_.clear();
@@ -365,6 +369,18 @@ void NetClient::requestCraft(std::uint16_t petalIndex, Rarity rarity, int count)
     w.u8(static_cast<std::uint8_t>(rarity));
     w.u16(static_cast<std::uint16_t>(std::max(0, count)));
     send(w);
+}
+
+void NetClient::requestOracleCraft(std::uint16_t petalIndex, Rarity rarity) {
+    ByteWriter w;
+    beginMessage(w, net::ClientMessage::OracleCraft);
+    w.u16(petalIndex);
+    w.u8(static_cast<std::uint8_t>(rarity));
+    send(w);
+}
+
+double NetClient::oracleCooldownRemainingMillis() const {
+    return std::max(0.0, oracleReadyAtMillis_ - nowMillis());
 }
 
 void NetClient::requestUpgradeSkill(SkillId skill, int tier) {
@@ -573,6 +589,7 @@ void NetClient::onMessage(net::Connection&, ByteReader& reader) {
         case net::ServerMessage::MazeInfo:      handleMazeInfo(reader); break;
         case net::ServerMessage::RealmChange:   handleRealmChange(reader); break;
         case net::ServerMessage::ChangePasswordResult: handleChangePasswordResult(reader); break;
+        case net::ServerMessage::OracleResult:  handleOracleResult(reader); break;
         default:
             // An unknown id means the server is newer than this build. The
             // frame is already fully buffered, so skipping it is safe and
@@ -704,11 +721,13 @@ void NetClient::handleProfile(ByteReader& reader) {
         const std::size_t at = static_cast<std::size_t>(mobIndex) * kRarityCount + rarityIndex(rarity);
         if (at < next.mobKills.size()) next.mobKills[at] = count;
     }
+    next.oracleCooldownMillis = reader.u32();
 
     // Replace wholesale only once the whole message decoded. A partially
     // applied inventory is how duplication bugs start.
     if (!reader.ok()) return;
     profile_ = std::move(next);
+    oracleReadyAtMillis_ = nowMillis() + static_cast<double>(profile_.oracleCooldownMillis);
 }
 
 void NetClient::handleCraftResult(ByteReader& reader) {
@@ -722,6 +741,19 @@ void NetClient::handleCraftResult(ByteReader& reader) {
     if (!reader.ok()) return;
     outcome.pending = true;
     craftOutcome_ = std::move(outcome);
+}
+
+void NetClient::handleOracleResult(ByteReader& reader) {
+    OracleOutcome outcome;
+    outcome.success = reader.boolean();
+    outcome.petalIndex = reader.u16();
+    outcome.rarity = clampRarity(reader.u8());
+    outcome.crafted = reader.u16();
+    outcome.spent = reader.u32();
+    outcome.reason = reader.str();
+    if (!reader.ok()) return;
+    outcome.pending = true;
+    oracleOutcome_ = std::move(outcome);
 }
 
 void NetClient::handleShopResult(ByteReader& reader) {

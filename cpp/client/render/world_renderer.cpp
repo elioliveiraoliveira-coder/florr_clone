@@ -150,9 +150,10 @@ constexpr double kProjectileArtPerRadius = 2.0;
 /// pickup radius: every drop reads the same size, whatever petal is on it.
 constexpr double kDropBackdropSide = ui::kItemTileDesign;
 /// Slides in from 30-50 units away, unwinding a spin of up to half a turn.
-constexpr double kDropSpawnSeconds = 0.4;
-constexpr double kDropSpawnNear = 30.0;
-constexpr double kDropSpawnSpread = 20.0;
+/// Shared with the oracle's slot, which lands an upgrade the same way.
+constexpr double kDropSpawnSeconds = ui::kDropLandSeconds;
+constexpr double kDropSpawnNear = ui::kDropLandNear;
+constexpr double kDropSpawnSpread = ui::kDropLandSpread;
 /// Flies to whoever took it, shrinking and fading; or spins out where it lay.
 constexpr double kDropPickupSeconds = 0.15;
 constexpr double kDropDespawnSeconds = 0.3;
@@ -164,8 +165,8 @@ constexpr double kDropRestTiltDegrees = 10.0;
 /// Loot breathes where it lies: the reference scales it by 1 +- 3% off a sine
 /// on the frame clock in milliseconds, i.e. 10 rad/s, and shares one phase
 /// across every drop rather than giving each its own.
-constexpr double kDropPulseRate = 10.0;
-constexpr double kDropPulseAmount = 0.03;
+constexpr double kDropPulseRate = ui::kDropPulseRate;
+constexpr double kDropPulseAmount = ui::kDropPulseAmount;
 
 double dropRestRotation(std::uint32_t netId) {
     // A cheap integer hash: consecutive net ids must not land on neighbouring
@@ -188,11 +189,11 @@ constexpr double kSparkleLifeSeconds = 3.0;
 /// the effect pool: wrapped in an Effect it competed with the damage numbers a
 /// dying mob produces in the same tick, and the burst -- which is the one that
 /// arrives exactly when the mob dies -- was the half that got dropped.
-constexpr int kDropBurstCount = 7;
-constexpr double kDropBurstSpeed = 3.0;
-constexpr double kDropBurstSpeedSpread = 3.0;
-constexpr double kDropBurstLifeMs = 500.0;
-constexpr double kDropBurstLifeSpreadMs = 250.0;
+constexpr int kDropBurstCount = ui::kDropBurstCount;
+constexpr double kDropBurstSpeed = ui::kDropBurstSpeed;
+constexpr double kDropBurstSpeedSpread = ui::kDropBurstSpeedSpread;
+constexpr double kDropBurstLifeMs = ui::kDropBurstLifeMs;
+constexpr double kDropBurstLifeSpreadMs = ui::kDropBurstLifeSpreadMs;
 /// A petal's shimmer is the rarity colour blended halfway to white. A drop's
 /// is the rarity colour itself -- only its alpha moves, so the grains read as
 /// the drop's own rarity rather than as a wash of white.
@@ -222,8 +223,8 @@ constexpr std::size_t kMaxDropSparkles = 512;
 constexpr std::size_t kDropShimmerBudget = kMaxDropSparkles * 3 / 4;
 constexpr double kDropSparkleSize = 5.0;
 constexpr double kDropSparkleSizeSpread = 10.0;
-constexpr double kDropBurstSize = 7.5;
-constexpr double kDropBurstSizeSpread = 15.0;
+constexpr double kDropBurstSize = ui::kDropBurstSize;
+constexpr double kDropBurstSizeSpread = ui::kDropBurstSizeSpread;
 
 /// What tells a drop's shimmer apart from a petal's. A petal's grains keep the
 /// browser build's spoked emission -- evenly spaced angles with a little
@@ -356,6 +357,7 @@ constexpr double kMobBarHeight = 8.0;
 /// least clear space kept between it and the tier at the right of that row.
 constexpr const char* kPetLabel = "Summon";
 constexpr double kPetLabelGap = 6.0;
+
 
 /// Flower-shaped mobs. Neither colour is read off mob stats: the loader
 /// overwrites every mob's colour with its rarity colour, and the whole point
@@ -555,7 +557,12 @@ void WorldRenderer::ingestEvents(WorldView& view) {
     const auto isTargetDummy = [this, &view](std::uint32_t netId) {
         if (!content_) return false;
         const auto it = view.entities().find(netId);
-        if (it == view.entities().end() || it->second.kind != net::EntityKind::Mob) return false;
+        if (it == view.entities().end()) return false;
+        // The mob the admin spawns, or the NPC a map stands on its plot: the
+        // same dummy, counted the same way.
+        if (it->second.kind != net::EntityKind::Mob && it->second.kind != net::EntityKind::Npc) {
+            return false;
+        }
         return content_->mob(it->second.typeIndex).id == "target_dummy";
     };
     const auto pushNumber = [this](Vec2 at, double value, double size, NumberChannel channel) {
@@ -2298,9 +2305,10 @@ void WorldRenderer::drawHitbox(Canvas& canvas, const RemoteEntity& entity, const
         // gave it, which is scaled by the mob it grew on.
         radius = entity.isRingPetal() ? entity.radius * zoom
                                       : kPetalHitSize * content_->petal(entity.typeIndex).size * zoom;
-    } else if (entity.kind == net::EntityKind::Mob) {
+    } else if (entity.kind == net::EntityKind::Mob || entity.kind == net::EntityKind::Npc) {
         // A mob's circle is its COLLISION size, drawn in its own tier colour:
-        // visual_scale moves the artwork and never the body.
+        // visual_scale moves the artwork and never the body. An NPC is a
+        // mob's body, so it is outlined the same way.
         color = rarityColor(entity.rarity);
     } else if (entity.kind == net::EntityKind::Drop) {
         // A drop is picked up by walking a square over it, so its overlay is
@@ -2367,6 +2375,23 @@ Vec2 WorldRenderer::mobEye(const MobDraw& mob) const {
     state.offset.x += (target.x - state.offset.x) * 0.15;
     state.offset.y += (target.y - state.offset.y) * 0.15;
     return state.offset;
+}
+
+Vec2 WorldRenderer::mobGaze(const MobDraw& mob) const {
+    MobEye& state = mobEyes_[mob.netId];
+    const Vec2 target{std::cos(mob.angle), std::sin(mob.angle)};
+    if (!state.gazeLive) {
+        // First sight starts on target, as mobEye's does: an oracle walking on
+        // screen is already looking where it looks.
+        state.gaze = target;
+        state.gazeLive = true;
+        return target;
+    }
+    // Per FRAME, at the flower eye's own fraction, and straight across rather
+    // than round the rim -- which is what a flower's pupils do when it turns,
+    // and what makes a turn read as the eye moving rather than the body.
+    state.gaze += (target - state.gaze) * 0.15;
+    return state.gaze;
 }
 
 const std::vector<std::uint16_t>& WorldRenderer::droppablePetals() const {
@@ -2608,6 +2633,14 @@ void WorldRenderer::drawMobBody(Canvas& canvas, const Camera& camera, const MobD
             paint(canvas);
             canvas.restore();
         }
+    } else if (sprites_ && sprites_->mobArt(mob.typeIndex) == MobArt::Oracle) {
+        // The body is drawn UPRIGHT and the facing goes to the eye instead: an
+        // oracle turning round is a pupil sliding across its socket, the way a
+        // flower's is, not a disc of tendrils spinning on the spot. So the
+        // gaze is the facing, eased per frame, in world space -- which with no
+        // rotation applied is the art's space too.
+        sprites_->drawMob(canvas, mob.typeIndex, art.x, art.y, diameter, 0.0, timeSeconds, false,
+                          mob.radius * visualScale, mobGaze(mob));
     } else if (sprites_ && sprites_->mobDrawable(mob.typeIndex)) {
         // The world radius is handed over beside the drawn one because the mobs
         // drawn by code cut their detail from how big the mob IS. Not the death
@@ -2631,6 +2664,7 @@ void WorldRenderer::drawMobLabel(Canvas& canvas, const Camera& camera, const Mob
     // The bar hangs off the DRAWN size, so visual_scale moves it along with
     // the artwork it labels.
     const double enemySize = mob.radius * 2.0 * visualScale;
+
     // A hornet is the smallest mob the bar is allowed to shrink to: below that
     // the name would be wider than the bar it labels.
     double minWidth = kMobBarMinWidth;
@@ -2681,14 +2715,30 @@ void WorldRenderer::drawMobLabel(Canvas& canvas, const Camera& camera, const Mob
                          static_cast<float>(barHeight * 0.5));
         canvas.fill();
 
-        const double fill = clamp(mob.healthFraction, 0.0, 1.0) * barWidth;
-        if (fill > 0) {
-            ui::setFill(canvas, ui::kHealth);
+        if (mob.npc) {
+            // An NPC's plate is a mob's plate with the bar in its invulnerable
+            // state: full whatever the wire says -- which is what the server
+            // keeps it at anyway -- in the pale yellow a flower's bar turns
+            // under respawn protection, the one colour this game already
+            // spends on "cannot be hurt". Green sitting at full would read as
+            // "not hurt yet", which on a dummy taking a flood of numbers is the
+            // difference between a working dummy and a bug.
+            ui::setFill(canvas, kInvulnHealth);
             canvas.beginPath();
             canvas.roundRect(static_cast<float>(barX), static_cast<float>(barY),
-                             static_cast<float>(fill), static_cast<float>(barHeight),
+                             static_cast<float>(barWidth), static_cast<float>(barHeight),
                              static_cast<float>(barHeight * 0.5));
             canvas.fill();
+        } else {
+            const double fill = clamp(mob.healthFraction, 0.0, 1.0) * barWidth;
+            if (fill > 0) {
+                ui::setFill(canvas, ui::kHealth);
+                canvas.beginPath();
+                canvas.roundRect(static_cast<float>(barX), static_cast<float>(barY),
+                                 static_cast<float>(fill), static_cast<float>(barHeight),
+                                 static_cast<float>(barHeight * 0.5));
+                canvas.fill();
+            }
         }
     }
 
@@ -2882,6 +2932,22 @@ void WorldRenderer::drawEntity(Canvas& canvas, const RemoteEntity& entity, const
             // block (see drawMobLabel), so it goes or stays whole.
             const MobConfig* type = content_ ? &content_->mob(mob.typeIndex) : nullptr;
             if (type == nullptr || !type->sharedChainBody()) mobLabels_.push_back(mob);
+            break;
+        }
+
+        case net::EntityKind::Npc: {
+            // A mob's body under an NPC's plate. No shadow is kept for it:
+            // nothing kills an NPC, so there is no death animation to replay.
+            MobDraw npc;
+            npc.netId = entity.netId;
+            npc.position = at;
+            npc.angle = entity.angle;
+            npc.radius = entity.radius;
+            npc.typeIndex = entity.typeIndex;
+            npc.rarity = entity.rarity;
+            npc.npc = true;
+            drawMobBody(canvas, camera, npc, timeSeconds);
+            mobLabels_.push_back(npc);
             break;
         }
 
@@ -3217,9 +3283,13 @@ void WorldRenderer::draw(Canvas& canvas, const EntityMap& entities, const Camera
     // ground effects, mobs, then every flower with its petals over it, then
     // loot, and projectiles last of all. Petals BELOW players was the visible
     // error -- a petal passing in front of a flower went behind its face.
+    // An NPC goes down just before the mobs: it stands still in the world, so
+    // anything moving past it passes over it, and its plate joins theirs --
+    // the labels are all laid at the end of the mob layer.
     static constexpr net::EntityKind kOrder[] = {
-        net::EntityKind::Effect, net::EntityKind::Mob, net::EntityKind::Player,
-        net::EntityKind::Petal, net::EntityKind::Drop, net::EntityKind::Projectile,
+        net::EntityKind::Effect, net::EntityKind::Npc, net::EntityKind::Mob,
+        net::EntityKind::Player, net::EntityKind::Petal, net::EntityKind::Drop,
+        net::EntityKind::Projectile,
     };
 
 
@@ -3264,7 +3334,7 @@ void WorldRenderer::draw(Canvas& canvas, const EntityMap& entities, const Camera
             drawEntity(canvas, entity, camera, at, timeSeconds);
             if (options.hitboxes) drawHitbox(canvas, entity, camera, at);
         }
-        chargeOps(kind == net::EntityKind::Mob          ? ops_.mobs
+        chargeOps(kind == net::EntityKind::Mob || kind == net::EntityKind::Npc ? ops_.mobs
                   : kind == net::EntityKind::Petal      ? ops_.petals
                   : kind == net::EntityKind::Drop       ? ops_.items
                   : kind == net::EntityKind::Projectile ? ops_.projectiles

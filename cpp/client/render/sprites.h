@@ -59,9 +59,16 @@ public:
     /// one. Zero means "the same as the drawn radius", which is what a call
     /// site with no world behind it -- a bestiary tile, a contact sheet -- has
     /// to say.
+    ///
+    /// `gaze` is where a painted eye looks, in the art's frame -- see
+    /// MobArtAttributes::gaze. Only a painter with an eye reads it.
     void drawMob(Canvas&, std::uint16_t index, double x, double y, double diameter,
                  double rotation, double timeSeconds, bool mirrored = false,
-                 double worldRadius = 0.0) const;
+                 double worldRadius = 0.0, Vec2 gaze = {1.0, 0.0}) const;
+
+    /// Which painter draws mob `index`, or MobArt::None for a document. The
+    /// world renderer asks so it can feed a painted eye the gaze it eases.
+    MobArt mobArt(std::uint16_t index) const;
 
     void drawPetal(Canvas&, std::uint16_t index, double x, double y, double diameter,
                    double rotation, double timeSeconds) const;
@@ -116,7 +123,8 @@ private:
     };
 
     void draw(Canvas&, const Sprite&, double x, double y, double diameter,
-              double rotation, double timeSeconds, bool mirrored, double worldRadius) const;
+              double rotation, double timeSeconds, bool mirrored, double worldRadius,
+              Vec2 gaze = {1.0, 0.0}) const;
 
     /// Parses one optional document, recording a warning instead of failing.
     std::shared_ptr<SvgDocument> compileArt(const std::string& source, const std::string& label);

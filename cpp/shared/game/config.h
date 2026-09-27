@@ -50,6 +50,19 @@ inline constexpr Rgba kOpaqueWhite = 0xFFFFFFFFu;
 /// readable string of separate projectiles rather than as one clump.
 inline constexpr double kDefaultBurstIntervalMillis = 100.0;
 
+/// What a mob is when a map (or `spawn_npc`) puts it down as an NPC, from its
+/// `npc` block. `present` is what makes the mob one at all; see
+/// shared/game/npc.h for what an NPC is.
+struct NpcSpec {
+    bool present = false;
+    /// What it does for a flower that walks up to it. None is legal: a target
+    /// dummy offers nothing but something to hit.
+    NpcService service = NpcService::None;
+    /// Whose side it stands on. The players' own NPCs cannot be hit at all; an
+    /// NPC on any other side takes every hit and loses nothing from any of them.
+    Team team = Team::Players;
+};
+
 /// A volley. `present` is what distinguishes "fires nothing" from "fires a
 /// projectile whose fields all happen to be zero".
 struct ProjectileSpec {
@@ -437,6 +450,12 @@ struct MobConfig {
     /// would fill the top of the screen with eleven bars and chat with eleven
     /// deaths.
     bool chainBody = false;
+
+    /// What this mob is as an NPC, from its `npc` block: absent for every
+    /// ordinary mob. Having one changes nothing about the mob itself -- an
+    /// admin's `spawn` still puts a hostile one in the world with the stats
+    /// above. See shared/game/npc.h.
+    NpcSpec npc;
 
     /// Applied when this mob is SUMMONED rather than spawned wild. Only the
     /// digger is nerfed, and only as a pet: a wild digger keeps its full stats.

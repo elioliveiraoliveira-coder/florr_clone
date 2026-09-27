@@ -37,6 +37,7 @@ class CombatSystem;
 class SpawnSystem;
 class ModeSpawner;
 class LootSystem;
+class NpcSystem;
 
 /// One loadout slot as the body in a given realm wears it: the account's
 /// petal, or the maze's shifted-and-benched version of it. See wornSlot().
@@ -214,6 +215,9 @@ private:
     void handleSetLoadout(Session&, ByteReader&);
     void handleSwapLoadout(Session&, ByteReader&);
     void handleCraft(Session&, net::Connection&, ByteReader&);
+    /// A guaranteed craft at an oracle. Refused unless the session's body is
+    /// alive and standing at one; see NpcSystem::findService.
+    void handleOracleCraft(Session&, net::Connection&, ByteReader&);
     void handleRespawn(Session&);
     void handlePing(net::Connection&, ByteReader&);
     void handleUpgradeSkill(Session&, net::Connection&, ByteReader&);
@@ -292,6 +296,9 @@ private:
     /// Silent for every tier below, which is where the reference draws the
     /// line too -- an ultra is crafted often enough to be noise.
     void announceRareCraft(const Session&, std::uint16_t petalIndex, Rarity made);
+    /// How long `userId` has left to wait for the oracle, 0 when it may craft.
+    /// A lapsed wait is forgotten on the way.
+    double oracleWaitMillis(const std::string& userId);
     /// Distinguishes two notifications written in the same millisecond. The id
     /// is only ever compared -- a client keys its read marks on it -- so a
     /// counter does the reference's nine random characters' whole job.
@@ -1059,6 +1066,13 @@ private:
     /// The arena's crowd and the maze's corridors, populated whole.
     std::unique_ptr<ModeSpawner> modes_;
     std::unique_ptr<LootSystem> loot_;
+    /// The friendly NPCs the maps place, and who each one is looking at.
+    std::unique_ptr<NpcSystem> npcs_;
+    /// When each account may next buy from an oracle, on clockMillis_, keyed
+    /// by userId. Server memory ONLY -- never written to the database -- so a
+    /// restart forgets every wait, which is what makes the half hour easy to
+    /// test past. Keyed by account rather than connection, so a relog does not.
+    std::unordered_map<std::string, double> oracleReadyAt_;
 
     /// Positions of every live flower, bots included, each with the realm it
     /// stands in, rebuilt each tick. The mob LOD counts a bot as an observer,

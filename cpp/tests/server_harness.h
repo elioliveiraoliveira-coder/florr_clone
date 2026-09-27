@@ -291,8 +291,28 @@ inline std::string fixturePad(double x, double y, const std::string& targetMap,
            "\" }]}";
 }
 
+/// One `npcs` object: a POINT naming the NPC that stands there and its tier.
+/// An empty `npc` writes the object without one, which the reader drops.
+inline std::string fixtureNpc(double x, double y, const std::string& npc,
+                              const std::string& rarity) {
+    std::string out = "{ \"id\": 95, \"name\": \"\", \"type\": \"npc\", \"visible\": true,"
+                      " \"point\": true, \"rotation\": 0, \"width\": 0, \"height\": 0,"
+                      " \"x\": " + std::to_string(x) + ", \"y\": " + std::to_string(y) +
+                      ", \"properties\": [";
+    std::string properties;
+    if (!npc.empty()) {
+        properties += "{ \"name\": \"npc\", \"type\": \"string\", \"value\": \"" + npc + "\" }";
+    }
+    if (!rarity.empty()) {
+        if (!properties.empty()) properties += ",";
+        properties += "{ \"name\": \"rarity\", \"type\": \"string\", \"value\": \"" + rarity +
+                      "\" }";
+    }
+    return out + properties + "]}";
+}
+
 /// A Tiled map `cols` x `rows`, plus whatever objects the caller names on each
-/// of the three object layers the game reads.
+/// of the object layers the game reads.
 ///
 /// Deliberately the same shape the real reader sees: one external tileset,
 /// plain-array layer data, and THREE tile layers whose `has_collision`
@@ -318,7 +338,8 @@ inline std::string fixtureMap(int cols, int rows, const std::string& doors,
                               const std::string& pads, const std::string& spawns = {},
                               const std::function<bool(int, int)>& solidAt = {},
                               const std::function<bool(int, int)>& waterAt = {},
-                              const std::function<bool(int, int)>& diagonalAt = {}) {
+                              const std::function<bool(int, int)>& diagonalAt = {},
+                              const std::string& npcs = {}) {
     std::string background, wall, water;
     for (int y = 0; y < rows; ++y) {
         for (int x = 0; x < cols; ++x) {
@@ -362,7 +383,9 @@ inline std::string fixtureMap(int cols, int rows, const std::string& doors,
   { "type": "objectgroup", "id": 5, "name": "teleporters", "draworder": "topdown",
     "opacity": 1, "visible": true, "x": 0, "y": 0, "objects": [)" + pads + R"(] },
   { "type": "objectgroup", "id": 6, "name": "spawns", "draworder": "topdown",
-    "opacity": 1, "visible": true, "x": 0, "y": 0, "objects": [)" + spawns + R"(] }
+    "opacity": 1, "visible": true, "x": 0, "y": 0, "objects": [)" + spawns + R"(] },
+  { "type": "objectgroup", "id": 7, "name": "npcs", "draworder": "topdown",
+    "opacity": 1, "visible": true, "x": 0, "y": 0, "objects": [)" + npcs + R"(] }
  ]
 })";
     return out;

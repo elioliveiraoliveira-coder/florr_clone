@@ -22,7 +22,7 @@ namespace flix::net {
 using ConnectionId = std::uint32_t;
 
 /// Bumped whenever any message layout in this file changes.
-inline constexpr std::uint16_t kProtocolVersion = 33;
+inline constexpr std::uint16_t kProtocolVersion = 35;
 
 /// "Not one of the rotating store's cards": a purchase at the full ladder
 /// price. Any other value is a slot index the server checks against the offers
@@ -113,12 +113,22 @@ enum class ClientMessage : std::uint8_t {
                         ///< shared/game/config.h); every other slot is refused
                         ///< server-side, so naming a slot cannot fire a petal
                         ///< that has no action.
+    OracleCraft,        ///< u16 itemType, u8 rarity -- ONE guaranteed upgrade at
+                        ///< an oracle NPC, for oracleCraftCost(rarity) of that
+                        ///< petal. One per craft and one craft per
+                        ///< kOracleCooldownMillis, per account. Refused unless
+                        ///< the body is standing within kNpcServiceReach of a
+                        ///< friendly oracle, which names no NPC on the wire --
+                        ///< the server finds the nearest one itself, so a
+                        ///< client cannot claim one it is nowhere near.
 };
 
 enum class ServerMessage : std::uint8_t {
     Welcome = 1,        ///< u16 protocolVersion, u8 accepted, str reason
     AuthResult,         ///< u8 status(AuthStatus), str token, str username, str reason
     Profile,            ///< full account state: xp, level, stars, inventory, loadout,
+                        ///< ... and last, u32 milliseconds until the account
+                        ///< may craft at an oracle again (0 when it may now),
                         ///< skins, the talent tree and the mob-kill ledger
     JoinAccepted,       ///< u32 selfNetId, f32 x, f32 y, u32 tick, i64 mazeDay,
                         ///< MapGrid (see below). `mazeDay` is the maze the
@@ -206,6 +216,14 @@ enum class ServerMessage : std::uint8_t {
                         ///< NOT an AuthResult -- that message also moves the
                         ///< client's login state, and this client is already
                         ///< logged in and staying that way.
+    OracleResult,       ///< u8 ok, u16 itemType, u8 rarity, u16 crafted,
+                        ///< u32 spent, str reason. `rarity` is the tier that
+                        ///< was MADE on success and the tier offered on a
+                        ///< refusal; `spent` is how many petals went in. Its
+                        ///< own reply rather than a CraftResult, because the
+                        ///< forge and the oracle are two panels with two
+                        ///< animations, and a result either one could consume
+                        ///< would land in whichever happened to be open.
 };
 
 // ---------------------------------------------------------------------------
@@ -361,6 +379,13 @@ enum class EntityKind : std::uint8_t {
     Projectile,
     Drop,        ///< a dropped petal waiting to be picked up
     Effect,      ///< a ground effect: poison cloud, web, lightning scar
+    /// An NPC. Its `typeIndex` is a MOB config -- an NPC wears a mob's
+    /// artwork, size and tier, which is what lets an admin spawn the same
+    /// creature as an enemy -- but it is not a mob: its health never moves, so
+    /// its plate carries an invulnerable bar, and the client offers the
+    /// service its config names to a flower that walks up to it. See
+    /// shared/game/npc.h.
+    Npc,
 };
 
 /// Immutable per-entity facts, sent once when an entity first enters view.

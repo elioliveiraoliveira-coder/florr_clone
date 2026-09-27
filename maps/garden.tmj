@@ -777,6 +777,40 @@
         }, 
         {
          "draworder":"topdown",
+         "id":15,
+         "name":"npcs",
+         "objects":[
+                {
+                 "height":0,
+                 "id":67,
+                 "name":"oracle",
+                 "point":true,
+                 "properties":[
+                        {
+                         "name":"npc",
+                         "type":"string",
+                         "value":"oracle"
+                        }, 
+                        {
+                         "name":"rarity",
+                         "type":"string",
+                         "value":"common"
+                        }],
+                 "rotation":0,
+                 "type":"npc",
+                 "visible":true,
+                 "width":0,
+                 "x":12900,
+                 "y":30700
+                }],
+         "opacity":1,
+         "type":"objectgroup",
+         "visible":true,
+         "x":0,
+         "y":0
+        }, 
+        {
+         "draworder":"topdown",
          "id":13,
          "name":"spawns",
          "objects":[
@@ -6199,8 +6233,8 @@
          "x":0,
          "y":0
         }],
- "nextlayerid":15,
- "nextobjectid":67,
+ "nextlayerid":16,
+ "nextobjectid":68,
  "orientation":"orthogonal",
  "renderorder":"right-down",
  "tiledversion":"1.10.1",

@@ -204,6 +204,18 @@ inline constexpr double kBeePulseScale = 0.5;
 /// restated, and it binds on nothing that was cruising sanely to begin with.
 inline constexpr double kBeeCruiseSpeed = 90.0;
 
+/// One fixed step of the bee cruise, for any cruiser: the base heading is
+/// re-picked every kBeeHeadingMillis, swings on the weave, and is pushed along
+/// with a pulsed thrust against per-tick friction under the cruise's ceiling.
+/// `speed` is the authored speed in units a second, `radius` the body it is
+/// scaled by. Returns the new velocity, which is also left in the cruise.
+///
+/// The ONE implementation: a bee's idle drift (MobAiSystem::driftPassive)
+/// and an NPC's cruise (NpcSystem) both step through here, so an oracle and a
+/// bee cannot come to fly differently.
+Vec2 stepBeeCruise(BeeCruise& cruise, double speed, double radius, double nowMillis, double dt,
+                   Rng& rng);
+
 // -- walking to a point ------------------------------------------------------
 //
 // Centipede heads and ownerless pets wander to a POINT rather than on a

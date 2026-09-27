@@ -603,6 +603,13 @@ void App::frame(double dt) {
     camera_.loadoutZoom = loadoutCameraZoom(net_.profile(), content());
     const bool inWorld = screen_ == Screen::Playing || screen_ == Screen::Dead;
     menus_.setInGame(inWorld);
+    // Re-measured every frame, so the craft panel turns into the oracle's as
+    // the flower walks up and back into the forge as it walks off. Only a
+    // living, placed flower is standing anywhere: the corpse on the death
+    // screen and the frames before the first snapshot get the forge.
+    menus_.setNearbyNpc(screen_ == Screen::Playing && net_.selfPlaced()
+                            ? nearbyNpcService(net_.view().selfDrawnPosition())
+                            : NpcService::None);
     if (menus_.takeExitRequest() && inWorld) leaveToTitle();
     // No inWorld guard: Settings' Log Out is offered on the title screen too,
     // and it is the one action that has to work from either of them.
@@ -681,9 +688,10 @@ void App::frame(double dt) {
         // only element in the reference that `.tutorial-highlight` can ever
         // find -- see the note in Tutorial::draw.
         tutorial_.draw(canvas, timeSeconds_,
-                       menus_.open() == MenuId::Crafting
-                           ? CraftingPanel::bounds(window_.width(), window_.height())
-                           : Rect{});
+                       menus_.open() != MenuId::Crafting ? Rect{}
+                       : menus_.nearbyNpc() == NpcService::Oracle
+                           ? OraclePanel::bounds(window_.width(), window_.height())
+                           : CraftingPanel::bounds(window_.width(), window_.height()));
     } else {
         drawTitleBackground(canvas, timeSeconds_);
         if (screen_ == Screen::Login) {

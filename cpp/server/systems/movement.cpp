@@ -226,7 +226,8 @@ StepOutcome stepCollide(const Terrain& terrain, Realm realm, Vec2& position, Vec
 
 MovementSystem::Queries::Queries(World& world)
     : players(world), mobs(world), projectiles(world),
-      mobTargets(world), mobBodies(world), playerPositions(world) {
+      mobTargets(world), npcTargets(world), mobBodies(world), playerPositions(world),
+      npcBodies(world) {
     // A body marked Dead is still in the world so later systems can see it die,
     // but a corpse must not keep walking.
     players.without<Dead>();
@@ -280,6 +281,11 @@ void MovementSystem::runWorldPhase(World& world, const Terrain& terrain,
 
 void MovementSystem::movePlayers(World& world, const Terrain& terrain,
                                  double nowMillis, double dt) {
+    npcDiscs_.clear();
+    queries_->npcBodies.each([&](Entity, NpcTag&, Transform& transform, Body& body) {
+        npcDiscs_.push_back({transform.position, body.radius, transform.realm});
+    });
+
     queries_->players.each([&](Entity e, PlayerTag&, Transform& transform, Motion& motion,
                                Body& body, PlayerInput& input) {
         // The cursor is one value with two readers -- movement and petal aim --
@@ -332,6 +338,7 @@ void MovementSystem::movePlayers(World& world, const Terrain& terrain,
         // enough that without it, diagonal seams are passable.
         stepCollide(terrain, transform.realm, transform.position, velocity, body.radius, dt, true,
                     true);
+        if (!npcDiscs_.empty()) pushOutOfNpcs(terrain, transform, body.radius);
         // TypeScript's stepPlayerMovement returns the friction-integrated
         // velocity unchanged when wall resolution alters the position. Keeping
         // the attempted velocity is observable on the following tick (the
@@ -339,6 +346,28 @@ void MovementSystem::movePlayers(World& world, const Terrain& terrain,
         // displacement changes both acceleration and the wall trajectory.
         motion.velocity = velocity;
     });
+}
+
+void MovementSystem::pushOutOfNpcs(const Terrain& terrain, Transform& transform,
+                                   double radius) const {
+    bool moved = false;
+    for (const NpcDisc& npc : npcDiscs_) {
+        if (npc.realm != transform.realm) continue;
+        const Vec2 offset = transform.position - npc.position;
+        const double reach = npc.radius + radius;
+        const double gapSq = offset.lengthSq();
+        if (gapSq >= reach * reach) continue;
+        // Straight out along the line between the two centres, which is what
+        // lets a flower pressing into one slide round it rather than stick.
+        // Dead centre has no line; any way out will do.
+        const double gap = std::sqrt(gapSq);
+        const Vec2 out = gap > 1e-9 ? offset * (1.0 / gap) : Vec2{1.0, 0.0};
+        transform.position = npc.position + out * reach;
+        moved = true;
+    }
+    // A wall still wins: an NPC parked against one must not be able to shove
+    // a flower into it.
+    if (moved) transform.position = terrain.resolveCircle(transform.position, radius, transform.realm);
 }
 
 void MovementSystem::stepTeleporters(World& world, double nowMillis, double dt) {
@@ -581,6 +610,13 @@ void MovementSystem::collectSeekTargets() {
     // the list here, since a pet is a mob on the players' team.
     queries_->mobTargets.each([&](Entity e, MobTag&, Transform& t, Faction& f, Health& h) {
         if (!h.alive()) return;
+        seekTargets_.push_back({e, t.position, f.team});
+    });
+    // A target dummy draws a guided shot like the mob it is built from. The
+    // players' own NPCs are not filed at all: a mob's volley that curled onto
+    // the oracle would be wasted on something that takes no hits.
+    queries_->npcTargets.each([&](Entity e, NpcTag&, Transform& t, Faction& f) {
+        if (f.team == Team::Players) return;
         seekTargets_.push_back({e, t.position, f.team});
     });
 }

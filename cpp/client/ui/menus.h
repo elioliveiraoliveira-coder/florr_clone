@@ -434,6 +434,84 @@ private:
     int survivors_ = 0;
 };
 
+/// The oracle: what the craft panel becomes while the flower stands at an
+/// oracle NPC.
+///
+/// One slot where the forge has five, every cell labelled "owned/price" where
+/// the forge prints odds, and an upgrade that arrives the way loot does -- the
+/// staged petal breathes like a drop on the ground, swells while the oracle
+/// works, and the upgrade lands in the slot with a drop's flourish and burst
+/// -- where the forge spins its ring. One upgrade per craft and one craft per
+/// half hour: while the account waits, the line under the slot counts the
+/// minutes down in red and nothing can be staged. Laid out against the
+/// reference shots; see menu_oracle.cpp.
+class OraclePanel {
+public:
+    bool render(MenuContext&);
+    void reset();
+    /// The reference card's width, one grid column wider for the unique
+    /// column it does not have, and its height. It stands on the forge's
+    /// left and bottom edges, so the two faces of the menu share a corner.
+    static double preferredWidth();
+    static double preferredHeight();
+    static Rect bounds(int viewWidth, int viewHeight);
+
+private:
+    enum class Phase : std::uint8_t { Idle, Pulsing, Result };
+
+    /// One grain of the slot's glitter, in panel coordinates. The same square
+    /// grains a drop throws, spawned and faded here because a panel has no
+    /// world renderer to throw them into.
+    struct Grain {
+        Vec2 position;
+        Vec2 velocity;
+        double lifeSeconds = 0;
+        double maxLifeSeconds = 1;
+        double size = 0;
+        double rotation = 0;
+        std::uint32_t color = 0xFFFFFFu;
+    };
+
+    /// Puts one upgrade's price of this petal in the slot, replacing whatever
+    /// was there: the oracle sells one upgrade per craft.
+    void stage(const Profile&, std::uint16_t petalIndex, Rarity rarity);
+    void throwGrains(Vec2 at, Rarity rarity, int count, double speed, double speedSpread,
+                     double lifeMs, double lifeSpreadMs, double size, double sizeSpread);
+
+    ui::Scroller scroll_;
+    std::uint16_t stagedPetal_ = kNoPetal;
+    Rarity stagedRarity_ = Rarity::Common;
+    /// 1 while something is staged, 0 when the slot is empty: the oracle sells
+    /// one upgrade per craft, at oracleCraftCost().
+    int crafts_ = 0;
+
+    Phase phase_ = Phase::Idle;
+    double phaseStarted_ = 0;
+    /// What went to the oracle on the click. The staging area is emptied at
+    /// once -- the petals are the server's now -- so the pulse draws this, and
+    /// a refusal puts it back.
+    std::uint16_t offeredPetal_ = kNoPetal;
+    Rarity offeredRarity_ = Rarity::Common;
+    int offeredCrafts_ = 0;
+    /// A result that arrived before the pulse had run its course.
+    bool resultPending_ = false;
+    std::uint16_t resultPetal_ = kNoPetal;
+    Rarity resultRarity_ = Rarity::Common;
+    int resultCount_ = 0;
+    /// The landing flourish's random start: where the upgrade slides in from,
+    /// and the spin it unwinds on the way.
+    Vec2 landFrom_;
+    double landSpin_ = 0;
+    /// Why the oracle said no, shown under the slot until it expires.
+    std::string refusal_;
+    double refusalUntil_ = 0;
+
+    std::vector<Grain> grains_;
+    /// Fractional grains owed by the pulse's emission rate, carried between
+    /// frames so the rate does not depend on how long a frame was.
+    double grainCredit_ = 0;
+};
+
 /// The bestiary: every mob at every tier it can appear at, and what the
 /// account has actually killed.
 class GalleryPanel {
@@ -768,6 +846,12 @@ public:
     /// True while a settings row is waiting for a key.
     bool capturingKey() const { return settings_panel_.capturingKey(); }
 
+    /// The service of the NPC the player's flower is standing at, or None.
+    /// The app measures it every frame; the craft panel reads it to decide
+    /// whether it is the forge or the oracle this frame.
+    void setNearbyNpc(NpcService service) { nearbyNpc_ = service; }
+    NpcService nearbyNpc() const { return nearbyNpc_; }
+
     /// Feeds the debug panel one frame of samples. See DebugPanel::recordFrame
     /// for why this is not done inside render().
     void recordDebugSample(double dtSeconds, NetClient& net) {
@@ -996,8 +1080,12 @@ private:
 
     Rect panelRect_{};
 
+    /// See setNearbyNpc().
+    NpcService nearbyNpc_ = NpcService::None;
+
     InventoryPanel inventory_;
     CraftingPanel crafting_;
+    OraclePanel oracle_;
     TalentsPanel talents_;
     GalleryPanel gallery_;
     ShopPanel shop_;

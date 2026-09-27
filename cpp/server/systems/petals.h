@@ -461,6 +461,10 @@ private:
     /// Wild mobs only: a summon is never a target for its owner's strike, its
     /// explosion or a behaviour waiting on first contact.
     std::unique_ptr<Query<MobTag, Transform, Body>> mobs_;
+    /// NPCs, for the ones not on the players' side: a target dummy is
+    /// something to swing at, and a petal that reaches for mobs has to reach
+    /// for it too or a dummy under-reports every build that relies on it.
+    std::unique_ptr<Query<NpcTag, Transform, Body, Faction>> npcs_;
 
     std::vector<Entity> playerList_;
     std::vector<Entity> actionList_;

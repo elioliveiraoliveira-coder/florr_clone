@@ -637,7 +637,10 @@ void MenuSystem::toggle(MenuId id) {
     panelSlide_ = 0.0;
     switch (id) {
         case MenuId::Inventory:   inventory_.reset(); break;
-        case MenuId::Crafting:    crafting_.reset(); break;
+        // Both halves of the craft menu: which one shows is decided per
+        // frame by where the flower is standing, so either may be the one
+        // this open ends up drawing.
+        case MenuId::Crafting:    crafting_.reset(); oracle_.reset(); break;
         case MenuId::Talents:     talents_.reset(); break;
         case MenuId::Gallery:     gallery_.reset(); break;
         case MenuId::Shop:        shop_.reset(); break;
@@ -763,6 +766,10 @@ namespace {
 /// literal width, and a viewport too narrow for one simply lets it overflow --
 /// it does not narrow the card and re-centre it, which would move a panel a
 /// player has learnt the position of.
+/// The highest the oracle's card may reach: clear of the player's own plate in
+/// the top-left corner, whatever the window's height.
+constexpr double kOracleTopMin = 160.0;
+
 Rect listPanel(double width, int, int viewHeight) {
     const double top = static_cast<double>(viewHeight) * kMenuListTopFraction;
     const double height =
@@ -782,6 +789,14 @@ Rect cornerPanel(double width, double height, double top, int, int) {
 
 Rect InventoryPanel::bounds(int w, int h) { return listPanel(preferredWidth(), w, h); }
 Rect CraftingPanel::bounds(int w, int h) { return listPanel(preferredWidth(), w, h); }
+/// The oracle's card is its reference's size rather than a share of the view:
+/// it stands on the list family's bottom edge and reaches up its own height,
+/// stopping short of the HUD at the top-left on a window too short for it.
+Rect OraclePanel::bounds(int w, int h) {
+    const Rect list = listPanel(preferredWidth(), w, h);
+    const double height = std::max(0.0, std::min(preferredHeight(), list.bottom() - kOracleTopMin));
+    return {list.x, list.bottom() - height, list.w, height};
+}
 /// The talent card is SQUARE, alone among the list panels: the tree is a fan
 /// spun about its own centre, and a tall card would only add height the fan
 /// never reaches while cropping the width it spreads across. It keeps the
@@ -987,17 +1002,25 @@ void MenuSystem::drawIconStrip(Canvas& canvas, Window& window, double timeSecond
             canvas.translate(static_cast<float>(-cx), static_cast<float>(-cy));
         }
 
+        // At an oracle the craft key opens the oracle, so its button wears the
+        // oracle's slate: the button says which panel it will open before the
+        // player presses it.
+        const bool oracleFace =
+            slot.menu == MenuId::Crafting && nearbyNpc_ == NpcService::Oracle;
+        const std::uint32_t face = oracleFace ? kOracleSkin.fill : slot.fill;
+        const std::uint32_t rim = oracleFace ? kOracleSkin.border : slot.border;
+
         // Two filled rects rather than a stroke: the face keeps the frame's own
         // rounding one step tighter, where a centred stroke would blow the
         // outer radius out by half its width. A BUTTON, so its face is rounded
         // -- the square inner body is the panels' shape, not the controls'.
-        setFill(canvas, slot.border);
+        setFill(canvas, rim);
         canvas.beginPath();
         canvas.roundRect(static_cast<float>(r.x), static_cast<float>(r.y),
                          static_cast<float>(r.w), static_cast<float>(r.h),
                          static_cast<float>(style.radius));
         canvas.fill();
-        setFill(canvas, slot.fill);
+        setFill(canvas, face);
         canvas.beginPath();
         canvas.roundRect(static_cast<float>(r.x + style.border),
                          static_cast<float>(r.y + style.border),
@@ -2103,7 +2126,13 @@ void MenuSystem::renderOpenPanel(Canvas& canvas, Window& window, NetClient& net,
     ui::TextCaptureScope capture(true);
     switch (drawn_) {
         case MenuId::Inventory:   keepOpen = inventory_.render(ctx); break;
-        case MenuId::Crafting:    keepOpen = crafting_.render(ctx); break;
+        case MenuId::Crafting:
+            // Standing at an oracle, the craft key opens the oracle. It is
+            // the same menu -- one key, one card, one anchor -- showing what
+            // the ground under the flower offers.
+            keepOpen = nearbyNpc_ == NpcService::Oracle ? oracle_.render(ctx)
+                                                        : crafting_.render(ctx);
+            break;
         case MenuId::Talents:     keepOpen = talents_.render(ctx); break;
         case MenuId::Gallery:     keepOpen = gallery_.render(ctx); break;
         case MenuId::Shop:        keepOpen = shop_.render(ctx); break;
@@ -2183,7 +2212,12 @@ void MenuSystem::render(Canvas& canvas, Window& window, NetClient& net, const Sp
     }
 
     if (drawn_ != MenuId::None) {
-        panelRect_ = panelBounds(drawn_, canvas.width(), canvas.height());
+        // The craft menu is the forge's card or the oracle's, whichever the
+        // ground under the flower offers -- and the oracle's is wider, so the
+        // card (and what captures the mouse) has to be the one being drawn.
+        panelRect_ = drawn_ == MenuId::Crafting && nearbyNpc_ == NpcService::Oracle
+                         ? OraclePanel::bounds(canvas.width(), canvas.height())
+                         : panelBounds(drawn_, canvas.width(), canvas.height());
         // `transform: translateY(100vh)` -> `translateY(0)` over 300ms
         // `ease-out`, which is cubic-bezier(0, 0, 0.58, 1). 1-(1-t)^1.7 tracks
         // that curve to within a percent the whole way along, where the cubic

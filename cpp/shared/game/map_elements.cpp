@@ -353,8 +353,15 @@ bool MapData::loadTiled(const std::string& path, std::string& errorOut, Realm re
     // The bands, said out loud -- see bandSummary() for why in those words.
     const std::string zones = bandSummary();
     int regions = 0;
+    // The NPCs, by the mob they wear, when there are any. Named rather than
+    // counted: an author who typed the id wrong reads it back here before the
+    // server says it placed nothing.
+    std::string npcs;
     for (const MapElement& element : elements_) {
         if (element.isMobRegion()) ++regions;
+        if (element.kind != MapElementKind::Npc) continue;
+        npcs += npcs.empty() ? ", npcs: " : ", ";
+        npcs += element.npcId;
     }
 
     // stdout, not stderr: this is what the map RESOLVED to, not something
@@ -362,11 +369,11 @@ bool MapData::loadTiled(const std::string& path, std::string& errorOut, Realm re
     // so "no [map] lines on stderr" is still a meaningful thing to check.
     std::fprintf(stdout,
                  "[map] %s: %dx%d tiles, biome \"%s\", mobs \"%s\", %s, %d region%s, "
-                 "%d art files, %d layers, doors: %s\n",
+                 "%d art files, %d layers, doors: %s%s\n",
                  id_.c_str(), width_, height_, biome_.c_str(), defaultMobGroup_.c_str(),
                  zones.c_str(), regions, regions == 1 ? "" : "s",
                  static_cast<int>(artFiles_.size()), static_cast<int>(layers_.size()),
-                 doors.empty() ? "none" : doors.c_str());
+                 doors.empty() ? "none" : doors.c_str(), npcs.c_str());
     return true;
 }
 
@@ -450,6 +457,7 @@ void MapData::adopt(const Json& array) {
         if (kind == "spawn") element.kind = MapElementKind::Spawn;
         else if (kind == "player_spawn") element.kind = MapElementKind::PlayerSpawn;
         else if (kind == "teleporter") element.kind = MapElementKind::Teleporter;
+        else if (kind == "npc") element.kind = MapElementKind::Npc;
         else continue;   // an annotation this build has no meaning for
         element.bounds = {value["x"].asDouble(), value["y"].asDouble(), value["width"].asDouble(),
                           value["height"].asDouble()};
@@ -477,7 +485,9 @@ void MapData::adopt(const Json& array) {
         // its width and height are both 0. Discarding those left the
         // annotation layer with no teleporters at all -- no dots on the
         // minimap, and no glow in the world.
-        if (element.kind != MapElementKind::Teleporter &&
+        // An NPC is a point for the same reason: it stands somewhere, and has
+        // no extent of its own until the content says how big it is.
+        if (element.kind != MapElementKind::Teleporter && element.kind != MapElementKind::Npc &&
             (element.bounds.w <= 0 || element.bounds.h <= 0)) {
             continue;
         }
@@ -543,6 +553,27 @@ void MapData::adopt(const Json& array) {
                 element.teleportTo = {destination["x"].asDouble(), destination["y"].asDouble()};
                 element.hasTeleportTo = true;
             }
+
+            element.npcId = properties["npc"].asString();
+            if (properties.contains("rarity")) {
+                // Lower-cased: Tiled is where an author types "Epic", and the
+                // tier table is spelled the way mobs.json spells it.
+                std::string tier = properties["rarity"].asString();
+                for (char& c : tier) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                element.npcRarity = parseRarity(tier);
+                // parseRarity reads anything it does not know as common, which
+                // for an NPC is a silently small one: said out loud instead.
+                if (tier != rarityName(element.npcRarity)) {
+                    std::fprintf(stderr,
+                                 "[map] an npc's `rarity` \"%s\" is not a tier; it stands at "
+                                 "common\n",
+                                 tier.c_str());
+                }
+            }
+        }
+        if (element.kind == MapElementKind::Npc && element.npcId.empty()) {
+            std::fprintf(stderr, "[map] an npc object names no `npc`; nothing will stand there\n");
+            continue;
         }
         elements_.push_back(std::move(element));
     }

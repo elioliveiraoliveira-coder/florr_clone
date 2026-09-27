@@ -427,6 +427,15 @@ bool CombatSystem::canHit(const World& world, Entity victim, Entity source, doub
     // it again would mark it Dead a second time and pay its bounty twice.
     if (health->current <= 0.0) return false;
     if (nowMillis < health->invulnerableUntilMillis) return false;
+    // The players' own NPCs are not something anybody hits: their own side
+    // cannot, and nothing on the other side is meant to be fighting them --
+    // a mob wandering through the oracle is not an attack on it. An NPC on any
+    // other side takes its hits (see applyDamage), which is what a target
+    // dummy is for.
+    if (world.has<NpcTag>(victim)) {
+        const Faction* faction = world.tryGet<Faction>(victim);
+        if (faction == nullptr || faction->team == Team::Players) return false;
+    }
     return canDamage(world, source, victim);
 }
 
@@ -635,9 +644,15 @@ DamageResult CombatSystem::applyDamage(World& world, Entity victim, Entity sourc
     // what the floating number reads. The LEDGER is credited the full swing
     // instead -- see creditSwing().
     const double applied = std::min(amount, health.current);
-    health.current -= applied;
-    if (health.current < 0.0) health.current = 0.0;
-    bool fatal = health.current <= 0.0;
+    // An NPC's bar never moves. The hit LANDS -- armour took its share above,
+    // it flashes, it is numbered and a target dummy counts it -- and nothing
+    // comes off, so nothing an NPC is hit by can kill it.
+    const bool invulnerable = world.has<NpcTag>(victim);
+    if (!invulnerable) {
+        health.current -= applied;
+        if (health.current < 0.0) health.current = 0.0;
+    }
+    bool fatal = !invulnerable && health.current <= 0.0;
     // A salt's repayment flashes the attacker as gardn's does, though it is
     // no hit of its own anywhere else in this function.
     if (isDirectHit(kind) || kind == DamageKind::Reflect) {
@@ -671,7 +686,10 @@ DamageResult CombatSystem::applyDamage(World& world, Entity victim, Entity sourc
     // mobs and `playerDamaged` carries flowers, and nothing else in the world
     // is ever narrated. A petal paying for its own swing therefore loses
     // health silently, which is what setInstanceHealth() does.
-    if (events_ != nullptr && (world.has<MobTag>(victim) || world.has<PlayerTag>(victim))) {
+    // An NPC is narrated like the mob it is built from: a target dummy that
+    // showed no numbers would have nothing to count.
+    if (events_ != nullptr && (world.has<MobTag>(victim) || world.has<PlayerTag>(victim) ||
+                               world.has<NpcTag>(victim))) {
         // Reported against the body that was HIT. For everything but a leech
         // that is the victim itself; for a leech it is the segment the petal
         // touched, so the number rises off the bead the player is looking at
@@ -1071,8 +1089,10 @@ void CombatSystem::applyArmorShred(World& world, Entity victim, double amount,
     if (!world.isAlive(victim) || !world.has<Health>(victim)) return;
     // Armour is a mob stat, so a strip is a mob debuff. A petal landing on
     // another flower in the arena takes nothing off it, and an orphaned bur
-    // cannot follow a slow's old bug into hurting whoever walks past.
-    if (!world.has<MobTag>(victim)) return;
+    // cannot follow a slow's old bug into hurting whoever walks past. An NPC
+    // wears its mob's armour, so it can be stripped of it: a dummy that a bur
+    // could not touch would under-report every bur build.
+    if (!world.has<MobTag>(victim) && !world.has<NpcTag>(victim)) return;
 
     // Deepest wins, expiry never comes closer -- applySlow's rule, for the
     // reason Afflictions::armorShred gives: a strip that ACCUMULATED across
@@ -1439,7 +1459,10 @@ void CombatSystem::tickGroundEffects(World& world, const SpatialGrid& grid,
             if (!inside) continue;
             if (!canHit(world, victim, field.effect, nowMillis)) continue;
 
-            if (field.damagePerHit > 0.0 && world.has<MobTag>(victim) &&
+            // A hostile NPC stands in a field like a mob does -- canHit above
+            // has already turned away the friendly ones.
+            if (field.damagePerHit > 0.0 &&
+                (world.has<MobTag>(victim) || world.has<NpcTag>(victim)) &&
                 !world.has<Pet>(victim)) {
                 const HitCooldowns* cooldowns = world.tryGet<HitCooldowns>(field.effect);
                 if (cooldowns == nullptr || cooldowns->ready(victim, nowMillis)) {
@@ -1517,8 +1540,13 @@ void CombatSystem::resolveAuras(World& world, const SpatialGrid& grid, double no
         grid.query(aura.realm, aura.position, aura.radius + kBroadphasePad, candidates_);
         for (const Entity victim : candidates_) {
             // Pets are not in the reference's enemy grid at all, so the field
-            // sweeps wild mobs and never the flower's own summons.
-            if (!world.has<MobTag>(victim) || world.has<Pet>(victim)) continue;
+            // sweeps wild mobs and never the flower's own summons. A hostile
+            // NPC is swept like a mob; applyDamage's canHit turns away the
+            // friendly ones.
+            if ((!world.has<MobTag>(victim) && !world.has<NpcTag>(victim)) ||
+                world.has<Pet>(victim)) {
+                continue;
+            }
             if (!world.isAlive(victim) || world.has<Dead>(victim)) continue;
             const Transform* transform = world.tryGet<Transform>(victim);
             if (transform == nullptr) continue;

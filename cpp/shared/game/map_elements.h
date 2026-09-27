@@ -83,6 +83,7 @@ enum class MapElementKind : std::uint8_t {
     Spawn,         ///< a mob band: a tier and a distribution over some ground
     PlayerSpawn,   ///< a rectangle a PLAYER may be put down in
     Teleporter,    ///< a pad, which leads to another map
+    Npc,           ///< where a friendly NPC stands -- a point
 };
 
 /// One annotation, in world coordinates. The numbers are already world units --
@@ -223,6 +224,17 @@ struct MapElement {
     /// `targetSpawn` wins when both are given.
     Vec2 teleportTo;
     bool hasTeleportTo = false;
+
+    /// NPCs only: WHICH NPC stands here, from the object's `npc` property --
+    /// the mobs.json id of a mob that has an `npc` block, or nothing is placed
+    /// and the load says why. Resolved against the content by the server, for
+    /// the reason a band's distribution is: this layer has no view of the
+    /// registry.
+    std::string npcId;
+    /// NPCs only: the tier it stands at, from `rarity` -- its size, the pool
+    /// its plate shows and the tier the plate names. Common when the map does
+    /// not say.
+    Rarity npcRarity = Rarity::Common;
 
     /// The centre of the BOUNDING BOX, which for a concave outline can be a
     /// point outside the zone. Deliberately so: this is what orders zones and

@@ -540,6 +540,103 @@ void paintLeechHead(Canvas& canvas, const MobArtAttributes& attr) {
     canvas.restore();
 }
 
+// ---------------------------------------------------------------------------
+// The oracle
+// ---------------------------------------------------------------------------
+//
+// Built from the reference art (oracle.svg, a 12-frame capture), which is laid
+// out on a body 28 units across: a dark disc with ten tendrils rooted on its
+// rim, a gold ring, the flower-yellow body, and one great eye in the middle.
+// Every number below is that drawing's, stated against its 28 and scaled by
+// the radius, because the oracle is one creature at every size -- unlike a
+// rock it has no texture to cut finer, and ten tendrils is its anatomy.
+//
+// The tendrils are the capture's motion fitted to a curve: each one swings
+// sideways off its own spoke on a sine, a little under one radian each way,
+// one period every seven and a half seconds, each a steady step of phase
+// behind the one before -- so the wave runs round the body. A tendril swung
+// hard over is also a longer one, and it bends: its control point turns only
+// 0.7 as far as its tip, which is what curls it rather than pivoting a stick.
+
+/// The reference body's radius. Everything is stated in these units.
+constexpr double kOracleArtRadius = 28.0;
+constexpr int kOracleTendrils = 10;
+/// The capture's sway: ~0.85 radians of phase a second, against the walk
+/// clock's 4.5 (kMobWalkRadiansPerSecond) -- so a hurried, chasing oracle
+/// waves twice as fast, the same way every walker here does.
+constexpr double kOracleSwayPerWalkRadian = 0.19;
+constexpr double kOracleSwayAmplitude = 0.9;
+constexpr double kOracleSwayPhaseStep = 0.97;
+constexpr double kOracleCurl = 0.7;
+/// Tip and control distances from the root: a base, plus a stretch per radian
+/// of sway.
+constexpr double kOracleTipBase = 5.9;
+constexpr double kOracleTipStretch = 2.9;
+constexpr double kOracleControlBase = 4.4;
+constexpr double kOracleControlStretch = 0.95;
+constexpr double kOracleTendrilWidth = 5.0;
+constexpr double kOracleRingRadius = 26.5;
+constexpr double kOracleBodyRadius = 23.5;
+constexpr double kOracleSocketRadius = 15.0;
+constexpr double kOraclePupilRadius = 10.5;
+/// How far the pupil's centre travels: exactly the room between it and the
+/// socket, so it runs right up to the rim and never through it.
+constexpr double kOraclePupilTravel = kOracleSocketRadius - kOraclePupilRadius;
+constexpr double kOracleSocketRim = 2.5;
+constexpr std::uint32_t kOracleInk = 0x111111u;
+constexpr std::uint32_t kOraclePupil = 0xEEEEEEu;
+
+void paintOracle(Canvas& canvas, const MobArtAttributes& attr) {
+    const double radius = attr.radius;
+    const double s = radius / kOracleArtRadius;
+    const auto circle = [&canvas](double r, std::uint32_t color, Vec2 at = {}) {
+        ui::setFill(canvas, color);
+        canvas.fillCircle(static_cast<float>(at.x), static_cast<float>(at.y), static_cast<float>(r));
+    };
+
+    // The dark disc the tendrils grow from, and the tendrils: one path, the
+    // points worked out on each spoke rather than rotating the canvas between
+    // them, for the reason paintCactus gives.
+    circle(radius, kOracleInk);
+    const double phase = attr.animation * kOracleSwayPerWalkRadian;
+    ui::setStroke(canvas, kOracleInk);
+    roundStrokes(canvas, kOracleTendrilWidth * s);
+    canvas.beginPath();
+    for (int i = 0; i < kOracleTendrils; ++i) {
+        const double spoke = kTau * i / kOracleTendrils;
+        const double sway = kOracleSwayAmplitude * std::sin(phase + i * kOracleSwayPhaseStep);
+        const double stretch = std::fabs(sway);
+        const Vec2 root = Vec2::fromAngle(spoke, radius);
+        const Vec2 control =
+            root + Vec2::fromAngle(spoke + sway * kOracleCurl,
+                                   (kOracleControlBase + kOracleControlStretch * stretch) * s);
+        const Vec2 tip = root + Vec2::fromAngle(spoke + sway,
+                                                (kOracleTipBase + kOracleTipStretch * stretch) * s);
+        canvas.moveTo(static_cast<float>(root.x), static_cast<float>(root.y));
+        canvas.quadraticCurveTo(static_cast<float>(control.x), static_cast<float>(control.y),
+                                static_cast<float>(tip.x), static_cast<float>(tip.y));
+    }
+    canvas.stroke();
+
+    // Over the tendrils' roots: the gold ring, then the body. The ring is the
+    // body colour's own outline shade -- gardn's 0.8 -- which for the flower
+    // yellow is the reference's #CFBB50 to within a step.
+    circle(kOracleRingRadius * s, outlineOf(attr.baseColor));
+    circle(kOracleBodyRadius * s, attr.baseColor);
+
+    // The eye. The pupil is placed by `gaze` and never leaves the socket: an
+    // eased gaze cutting across between two bearings is shorter than one, and
+    // a longer one is clamped. The rim goes on LAST, over the pupil's edge,
+    // which is what seats it in the socket rather than on top of it.
+    Vec2 gaze = attr.gaze;
+    if (gaze.lengthSq() > 1.0) gaze = gaze * (1.0 / gaze.length());
+    circle(kOracleSocketRadius * s, kOracleInk);
+    circle(kOraclePupilRadius * s, kOraclePupil, gaze * (kOraclePupilTravel * s));
+    ui::setStroke(canvas, kOracleInk);
+    canvas.setLineWidth(static_cast<float>(kOracleSocketRim * s));
+    canvas.strokeCircle(0.0f, 0.0f, static_cast<float>(kOracleSocketRadius * s));
+}
+
 } // namespace
 
 MobArt mobArtFor(const std::string& image) {
@@ -553,6 +650,7 @@ MobArt mobArtFor(const std::string& image) {
     if (name == "leech") return MobArt::LeechHead;
     if (name == "leech_body") return MobArt::LeechBody;
     if (name == "spider") return MobArt::Spider;
+    if (name == "oracle") return MobArt::Oracle;
     return MobArt::None;
 }
 
@@ -567,6 +665,7 @@ void paintMobArt(Canvas& canvas, MobArt art, const MobArtAttributes& attr) {
         case MobArt::LeechHead: paintLeechHead(canvas, attr); break;
         case MobArt::LeechBody: paintLeechBody(canvas, attr); break;
         case MobArt::Spider:    paintSpider(canvas, attr); break;
+        case MobArt::Oracle:    paintOracle(canvas, attr); break;
         case MobArt::None:      break;
     }
 }

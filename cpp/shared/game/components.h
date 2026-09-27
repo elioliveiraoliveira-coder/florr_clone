@@ -21,6 +21,7 @@
 #include "shared/core/entity.h"
 #include "shared/core/types.h"
 #include "shared/game/constants.h"
+#include "shared/game/npc.h"
 #include "shared/game/rarity.h"
 #include "shared/game/realm.h"
 #include "shared/game/skills.h"
@@ -38,6 +39,9 @@ struct PetalTag {};
 struct ProjectileTag {};
 struct DropTag {};
 struct GroundEffectTag {};
+/// An NPC. Deliberately NOT a MobTag entity, although it wears a mob's config:
+/// see shared/game/npc.h for everything that buys.
+struct NpcTag {};
 
 /// Marks an entity as finished. The reaper destroys these at the end of the
 /// tick, so a death that happens mid-system is visible to every later system
@@ -699,6 +703,20 @@ struct Wobble {
     double phase = 0;
 };
 
+/// The whole state of one bee cruise, for a mover that is not a mob -- an NPC
+/// -- and so carries none of the mob components the AI keeps it in. The step
+/// itself is stepBeeCruise() in server/systems/mob_ai.h, the same one a bee's
+/// idle drift runs.
+struct BeeCruise {
+    /// The base heading the weave swings about, and when it was last re-picked.
+    double heading = 0;
+    double headingPickedMillis = 0;
+    /// The drift store: friction and the clamp are applied to it each step.
+    Vec2 velocity;
+    /// This cruiser's offset into the weave, so two are never in step.
+    double phase = 0;
+};
+
 /// A child a nest (or a queen) put into the world, and its leash.
 ///
 /// Dragged more than the retreat radius from its parent, the child forgets its
@@ -805,6 +823,32 @@ struct MobRingPetal {
     /// stamps them onto the contact source: a dandelion's seed head locks
     /// healing exactly as its loose seeds and a flower's own dandelion do.
     double noHealDurationMillis = 0;
+};
+
+/// What makes an NpcTag entity an NPC: which mob it wears, and where it lives.
+///
+/// The mob config and tier are here rather than in a MobType because an NPC is
+/// not a mob, and MobType is what several systems read to decide that
+/// something IS one. Replicated carries the same two numbers to the client.
+struct Npc {
+    std::uint16_t configIndex = 0;
+    Rarity rarity = Rarity::Common;
+    NpcService service = NpcService::None;
+    /// Where it was put down. An NPC has no Motion and nothing moves it, so
+    /// this is also where it stands; it is kept apart from the Transform so
+    /// that a respawn puts it back on its mark whatever the Transform says.
+    Vec2 home;
+    /// When its idle glance next moves on. Only read by an NPC that stands
+    /// still, and only while no flower is inside kNpcWatchRange -- with one
+    /// there, it looks at the nearest. One that cruises looks where it goes.
+    double nextGlanceMillis = 0;
+    /// Whether it cruises about its home the way a bee does, and at what
+    /// authored speed (units a second): its mob's `bee_ai` and `speed`,
+    /// resolved at spawn. An NPC whose mob does not fly like a bee stands
+    /// still -- a target dummy that wandered off would not be one.
+    bool cruises = false;
+    double speed = 0;
+    BeeCruise cruise;
 };
 
 /// A nest that periodically produces escorts, up to a live cap.
@@ -1095,6 +1139,8 @@ FLIX_COMPONENT(flix::PetalTag);
 FLIX_COMPONENT(flix::ProjectileTag);
 FLIX_COMPONENT(flix::DropTag);
 FLIX_COMPONENT(flix::GroundEffectTag);
+FLIX_COMPONENT(flix::NpcTag);
+FLIX_COMPONENT(flix::Npc);
 FLIX_COMPONENT(flix::Dead);
 FLIX_COMPONENT(flix::Transform);
 FLIX_COMPONENT(flix::Motion);

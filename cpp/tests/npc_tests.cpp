@@ -1,0 +1,1174 @@
+// NPCs, and the first of them: the oracle.
+//
+// An NPC is a mob's config standing in the world without being a mob
+// (shared/game/npc.h). These hold the whole chain to account: the map places
+// one, its pool never moves -- a friendly one refuses every hit, a hostile one
+// like the target dummy takes them all and loses nothing -- it watches whoever
+// walks up, it is streamed as its own kind and drawn with the mob's plate and
+// an invulnerable bar, an admin can still spawn the same creature as an enemy,
+// and the oracle's service, a guaranteed craft at a fixed price, is charged
+// exactly that price and is refused to anyone not standing at it.
+
+#include "test.h"
+
+#include <cmath>
+#include <string>
+#include <vector>
+
+#include "client/camera.h"
+#include "client/render/sprites.h"
+#include "client/render/world_renderer.h"
+#include "client/ui/theme.h"
+#include "client/world_view.h"
+#include "fixture_content.h"
+#include "server/db.h"
+#include "server/systems/combat.h"
+#include "server/systems/npcs.h"
+#include "server_harness.h"
+#include "shared/game/map_elements.h"
+
+using namespace flix;
+using namespace flix::testsupport;
+
+namespace {
+
+void seedAccount(const std::string& path, const std::string& username, bool admin = false) {
+    Database db;
+    std::string error;
+    db.load(path, error);
+    db.setPasswordCost(4);
+    CreateResult created = db.createUser(username, "password7");
+    if (created.ok() && admin) created.account->admin = true;
+    db.markDirty();
+    db.save();
+}
+
+void seedStack(const std::string& path, const std::string& username, const char* itemKey,
+               Rarity rarity, int count) {
+    Database db;
+    std::string error;
+    db.load(path, error);
+    const Account* account = db.findUser(username);
+    if (account == nullptr) return;
+    db.progress(account->id).addItem(rarity, itemKey, count);
+    db.markDirty();
+    db.save();
+}
+
+/// Where the fixture's oracle stands: a cell and a half east of the one-cell
+/// door, so a flower put down anywhere in the door is inside the server's
+/// reach of it without starting on top of it.
+constexpr double kOracleX = kTileSize * 3.5;
+constexpr double kOracleY = kTileSize * 2.5;
+
+/// A 24x24 walled field: one small door, and whatever `npcs` the test names.
+std::string npcWorld(const std::string& name, const std::string& npcs) {
+    const double cell = kTileSize;
+    const std::string map =
+        fixtureMap(24, 24, fixtureDoor("meadow", "Meadow", cell * 2, cell * 2, cell, cell, true, 0.0),
+                   std::string(), std::string(), {}, {}, {}, npcs);
+    return stageDataDir(name, {{"meadow", map}});
+}
+
+std::string oracleWorld(const std::string& name) {
+    return npcWorld(name, fixtureNpc(kOracleX, kOracleY, "oracle", "epic"));
+}
+
+/// The NPC standing in `world` that wears mob `id`, or NULL_ENTITY.
+Entity npcWearing(World& world, const char* id) {
+    Entity found = NULL_ENTITY;
+    Query<NpcTag, Npc> npcs{world};
+    npcs.each([&](Entity e, NpcTag&, Npc& npc) {
+        if (npc.configIndex == content().mobIndex(id)) found = e;
+    });
+    return found;
+}
+
+Entity onlyPlayer(World& world);
+
+/// Stands the one flower just clear of the NPC wearing `id`, wherever its
+/// cruise has taken it, and lets a tick pass so the server has it there. The
+/// oracle does not hold still any more, so "at the oracle" is a place that has
+/// to be looked up at the moment it is needed.
+void standBeside(Harness& h, NetClient& client, const char* id) {
+    World& world = h.server.world();
+    const Entity npc = npcWearing(world, id);
+    const Entity player = onlyPlayer(world);
+    if (npc == NULL_ENTITY || player == NULL_ENTITY) return;
+    const Vec2 at = world.get<Transform>(npc).position;
+    world.get<Transform>(player).position = at + Vec2{world.get<Body>(npc).radius + 60.0, 0.0};
+    h.step(1, {&client});
+}
+
+/// Logs `name` in and puts it in the world, waiting for both.
+bool joinAs(Harness& h, NetClient& client, const char* name) {
+    if (!connectClient(h, client)) return false;
+    client.requestLogin(name, "password7");
+    if (!h.stepUntil({&client}, [&] { return client.status() == NetClient::Status::LoggedIn; })) {
+        return false;
+    }
+    client.joinGame(1920, 1080, {}, name);
+    return h.stepUntil({&client}, [&] { return client.status() == NetClient::Status::Playing; },
+                       200);
+}
+
+std::vector<Entity> npcsIn(World& world) {
+    std::vector<Entity> out;
+    Query<NpcTag> npcs{world};
+    npcs.each([&](Entity e, NpcTag&) { out.push_back(e); });
+    return out;
+}
+
+Entity onlyPlayer(World& world) {
+    Entity found = NULL_ENTITY;
+    Query<PlayerTag> players{world};
+    players.each([&](Entity e, PlayerTag&) { found = e; });
+    return found;
+}
+
+/// Waits for the oracle's answer and hands it back with `pending` cleared, as
+/// the panel reads it.
+bool awaitOracle(Harness& h, NetClient& client, OracleOutcome& out) {
+    if (!h.stepUntil({&client}, [&] { return client.oracleOutcome().pending; }, 200)) return false;
+    out = client.oracleOutcome();
+    client.oracleOutcome().pending = false;
+    return true;
+}
+
+template <class F>
+bool awaitProfile(Harness& h, NetClient& client, F predicate) {
+    return h.stepUntil({&client}, [&] { return predicate(client.profile()); }, 200);
+}
+
+bool ensureShippedContent() {
+    std::string error;
+    return loadContent(dataDir(), error);
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// The price list and the content
+// ---------------------------------------------------------------------------
+
+TEST(the_oracle_charges_the_stated_price_for_every_tier) {
+    // The design's own numbers, tier by tier -- "unusual" is this game's
+    // uncommon. Apex costs nothing because nothing crafts out of it.
+    const int expected[] = {7, 11, 19, 34, 65, 128, 253, 506, 1012, 0};
+    for (int i = 0; i < kRarityCount; ++i) {
+        CHECK_EQ(oracleCraftCost(static_cast<Rarity>(i)), expected[i]);
+    }
+}
+
+TEST(the_shipped_oracle_is_a_mob_that_offers_a_service) {
+    CHECK(ensureShippedContent());
+    const std::uint16_t oracle = content().mobIndex("oracle");
+    CHECK(oracle != kInvalidIndex);
+    if (oracle == kInvalidIndex) return;
+    const MobConfig& config = content().mob(oracle);
+    CHECK(config.npc.present);
+    CHECK(config.npc.service == NpcService::Oracle);
+    CHECK(config.npc.team == Team::Players);
+    // Drawn by code, not a document: the reference art is a 12-frame capture
+    // whose eye has to move.
+    CHECK_EQ(config.image, std::string("$oracle"));
+    // Never grown by the ground and never dropped as an egg: an oracle in the
+    // world is one a map or an admin put there.
+    CHECK(config.noEggDrop);
+    CHECK(!content().mobStats(oracle, Rarity::Common).ambient);
+    // The target dummy is the other NPC: on the hostiles' side, so a flower
+    // can hit it, and offering nothing but that. Nothing else in the shipped
+    // content is an NPC by accident.
+    const std::uint16_t dummy = content().mobIndex("target_dummy");
+    CHECK(dummy != kInvalidIndex);
+    if (dummy != kInvalidIndex) {
+        CHECK(content().mob(dummy).npc.present);
+        CHECK(content().mob(dummy).npc.team == Team::Hostiles);
+        CHECK(content().mob(dummy).npc.service == NpcService::None);
+    }
+    for (std::uint16_t i = 0; i < content().mobCount(); ++i) {
+        if (i == oracle || i == dummy) continue;
+        CHECK(!content().mob(i).npc.present);
+    }
+}
+
+TEST(an_npc_block_is_read_and_its_unknowns_are_reported) {
+    ContentRegistry registry;
+    std::string error;
+    // A service or a side this build does not know is SAID, and read as the
+    // default -- the mob is still an NPC, so a map that places one still gets
+    // something standing there. A block that is not an object is no NPC.
+    const std::string mobs = test::fixtureMobs(R"({
+        "seer": { "name": "Seer", "health": 10, "npc": { "service": "oracle" } },
+        "fake": { "name": "Fake", "health": 10, "npc": { "service": "banker" } },
+        "post": { "name": "Post", "health": 10, "npc": { "team": "hostile" } },
+        "odd": { "name": "Odd", "health": 10, "npc": { "team": "pirates" } },
+        "flat": { "name": "Flat", "health": 10, "npc": "oracle" },
+        "wild": { "name": "Wild", "health": 10 }
+    })");
+    const std::string petals = test::fixturePetals(R"({ "basic": { "name": "Basic" } })");
+    const std::string dir = "/tmp/florr-npc-config-" + std::to_string(::getpid());
+    ::mkdir(dir.c_str(), 0755);
+    CHECK(writeFile(dir + "/mobs.json", mobs));
+    CHECK(writeFile(dir + "/petals.json", petals));
+    CHECK(registry.loadFiles(dir + "/mobs.json", dir + "/petals.json", error));
+    const auto spec = [&](const char* id) { return registry.mob(registry.mobIndex(id)).npc; };
+    CHECK(spec("seer").present);
+    CHECK(spec("seer").service == NpcService::Oracle);
+    CHECK(spec("seer").team == Team::Players);
+    CHECK(spec("fake").present);
+    CHECK(spec("fake").service == NpcService::None);
+    CHECK(spec("post").present);
+    CHECK(spec("post").team == Team::Hostiles);
+    CHECK(spec("odd").present);
+    CHECK(spec("odd").team == Team::Players);
+    CHECK(!spec("flat").present);
+    CHECK(!spec("wild").present);
+    const auto warned = [&](const char* needle) {
+        for (const std::string& line : registry.warnings()) {
+            if (line.find(needle) != std::string::npos) return true;
+        }
+        return false;
+    };
+    CHECK(warned("banker"));
+    CHECK(warned("pirates"));
+    CHECK(warned("npc is"));
+    removeDataDir(dir);
+}
+
+// ---------------------------------------------------------------------------
+// The map
+// ---------------------------------------------------------------------------
+
+TEST(an_npc_object_is_a_point_naming_its_mob_and_tier) {
+    CHECK(ensureShippedContent());
+    // Tiled is where an author types "Epic", so the tier is read case-blind;
+    // an object naming no mob is dropped rather than placed as nothing.
+    const std::string dir = npcWorld("npc-map", fixtureNpc(700.0, 900.0, "oracle", "Epic") + "," +
+                                                    fixtureNpc(300.0, 300.0, "", "rare"));
+    if (dir.empty()) { CHECK(false); return; }
+    MapData map;
+    std::string error;
+    CHECK(map.loadTiled(dir + "/meadow.tmj", error));
+    int npcs = 0;
+    for (const MapElement& element : map.elements()) {
+        if (element.kind != MapElementKind::Npc) continue;
+        ++npcs;
+        CHECK_EQ(element.npcId, std::string("oracle"));
+        CHECK(element.npcRarity == Rarity::Epic);
+        CHECK_NEAR(element.bounds.x, 700.0, 1e-6);
+        CHECK_NEAR(element.bounds.y, 900.0, 1e-6);
+    }
+    CHECK_EQ(npcs, 1);
+    removeDataDir(dir);
+}
+
+TEST(a_site_that_names_no_npc_is_reported_and_left_empty) {
+    CHECK(ensureShippedContent());
+    // A mob that offers nothing, and a mob that does not exist: both are
+    // typos for an NPC someone meant, and both say so.
+    const std::string dir = npcWorld(
+        "npc-sites", fixtureNpc(700.0, 700.0, "oracle", "common") + "," +
+                         fixtureNpc(900.0, 700.0, "bee", "common") + "," +
+                         fixtureNpc(1100.0, 700.0, "not_a_mob", "common"));
+    if (dir.empty()) { CHECK(false); return; }
+    MapData map;
+    std::string error;
+    CHECK(map.loadTiled(dir + "/meadow.tmj", error));
+    WorldMaps maps;
+    maps.adoptSingle(std::move(map));
+
+    NpcSystem npcs;
+    std::vector<std::string> warnings;
+    npcs.loadSites(maps, content(), warnings);
+    CHECK_EQ(npcs.sites().size(), std::size_t(1));
+    CHECK_EQ(warnings.size(), std::size_t(2));
+    if (!npcs.sites().empty()) {
+        CHECK_EQ(npcs.sites()[0].mobIndex, content().mobIndex("oracle"));
+    }
+    removeDataDir(dir);
+}
+
+TEST(the_shipped_garden_has_an_oracle_on_open_ground) {
+    CHECK(ensureShippedContent());
+    WorldMaps maps;
+    Terrain terrain;
+    std::string error;
+    CHECK(maps.load(dataDir(), &terrain, error));
+    NpcSystem npcs;
+    std::vector<std::string> warnings;
+    npcs.loadSites(maps, content(), warnings);
+    CHECK(warnings.empty());
+    int oracles = 0;
+    for (const NpcSystem::Site& site : npcs.sites()) {
+        if (content().mob(site.mobIndex).npc.service != NpcService::Oracle) continue;
+        ++oracles;
+        CHECK(site.realm == Realm::Overworld);
+        // Its default size, common: the tier is the NPC's size, and the
+        // garden's is the smallest there is.
+        CHECK(site.rarity == Rarity::Common);
+        // Standing where it was drawn: a body pushed out of a wall would be
+        // somewhere its author did not put it.
+        const double radius = content().mobStats(site.mobIndex, site.rarity).radius;
+        const Vec2 placed = terrain.resolveCircle(site.position, radius, site.realm);
+        CHECK_NEAR(placed.x, site.position.x, 1e-6);
+        CHECK_NEAR(placed.y, site.position.y, 1e-6);
+    }
+    CHECK_EQ(oracles, 1);
+}
+
+// ---------------------------------------------------------------------------
+// In the world
+// ---------------------------------------------------------------------------
+
+TEST(the_map_places_a_friendly_oracle_whose_pool_never_moves) {
+    const std::string dir = oracleWorld("npc-place");
+    Harness h("npc-place", [](const std::string& path) { seedAccount(path, "seer"); }, dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+
+    NetClient client;
+    CHECK(joinAs(h, client, "seer"));
+    h.step(5, {&client});
+
+    World& world = h.server.world();
+    const std::vector<Entity> npcs = npcsIn(world);
+    CHECK_EQ(npcs.size(), std::size_t(1));
+    if (npcs.size() != 1) { removeDataDir(dir); return; }
+    const Entity oracle = npcs[0];
+
+    const Npc& npc = world.get<Npc>(oracle);
+    CHECK(npc.service == NpcService::Oracle);
+    CHECK(npc.rarity == Rarity::Epic);
+    // Its home is the map's mark, and its cruise keeps it about there.
+    CHECK_NEAR(npc.home.x, kOracleX, 1e-6);
+    CHECK_NEAR(npc.home.y, kOracleY, 1e-6);
+    CHECK(npc.cruises);
+    CHECK(distance(world.get<Transform>(oracle).position, npc.home) < kNpcLeashRadius);
+    // On the players' side, wearing its mob's pool at its tier -- the one its
+    // plate is drawn over -- full.
+    CHECK(world.get<Faction>(oracle).team == Team::Players);
+    CHECK(world.has<Health>(oracle));
+    const MobStats stats = content().mobStats(content().mobIndex("oracle"), Rarity::Epic);
+    CHECK_NEAR(world.get<Health>(oracle).max, stats.health, 1e-9);
+    CHECK_NEAR(world.get<Health>(oracle).current, stats.health, 1e-9);
+    // Not a mob: nothing that hunts, farms or recycles mobs can see it.
+    CHECK(!world.has<MobTag>(oracle));
+    CHECK(!world.has<MobType>(oracle));
+    CHECK(!world.has<MobAi>(oracle));
+    CHECK(!world.has<Motion>(oracle));
+
+    // Streamed as its own kind, wearing the oracle's config.
+    CHECK(h.stepUntil({&client}, [&] {
+        for (const auto& entry : client.view().entities()) {
+            if (entry.second.kind == net::EntityKind::Npc &&
+                entry.second.typeIndex == content().mobIndex("oracle")) {
+                return true;
+            }
+        }
+        return false;
+    }, 60));
+    removeDataDir(dir);
+}
+
+TEST(an_npc_that_stands_turns_to_look_at_the_flower_beside_it) {
+    // The dummy stands still, so it is the one that watches: walked round to
+    // the far side of it, the facing follows the flower.
+    const double dummyX = kTileSize * 8.0;
+    const double dummyY = kTileSize * 8.0;
+    const std::string dir =
+        npcWorld("npc-look", fixtureNpc(dummyX, dummyY, "target_dummy", "common"));
+    Harness h("npc-look", [](const std::string& path) { seedAccount(path, "seer"); }, dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+
+    NetClient client;
+    CHECK(joinAs(h, client, "seer"));
+    h.step(3, {&client});
+    World& world = h.server.world();
+    const Entity dummy = npcWearing(world, "target_dummy");
+    const Entity player = onlyPlayer(world);
+    if (dummy == NULL_ENTITY || player == NULL_ENTITY) { CHECK(false); removeDataDir(dir); return; }
+
+    for (const Vec2 at : {Vec2{dummyX, dummyY + 300.0}, Vec2{dummyX - 300.0, dummyY},
+                          Vec2{dummyX + 300.0, dummyY - 10.0}}) {
+        world.get<Transform>(player).position = at;
+        h.step(2, {&client});
+        const Transform& self = world.get<Transform>(dummy);
+        const Vec2 flower = world.get<Transform>(player).position;
+        const double toward = (flower - self.position).angle();
+        CHECK(std::fabs(angleDelta(self.angle, toward)) < 0.05);
+    }
+    removeDataDir(dir);
+}
+
+TEST(the_oracle_looks_where_it_is_flying_even_with_a_flower_beside_it) {
+    // The oracle cruises, and its eye is on where it is going: a flower
+    // standing right next to it does not turn its head.
+    const std::string dir = oracleWorld("npc-look-fly");
+    Harness h("npc-look-fly", [](const std::string& path) { seedAccount(path, "seer"); }, dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+
+    NetClient client;
+    CHECK(joinAs(h, client, "seer"));
+    h.step(3, {&client});
+    World& world = h.server.world();
+    const Entity oracle = npcWearing(world, "oracle");
+    const Entity player = onlyPlayer(world);
+    if (oracle == NULL_ENTITY || player == NULL_ENTITY) { CHECK(false); removeDataDir(dir); return; }
+
+    int checked = 0;
+    for (int i = 0; i < 120; ++i) {
+        // Kept right beside it, on the side it is NOT flying toward, so a head
+        // that turned to the flower would be pointing the wrong way.
+        const Transform& at = world.get<Transform>(oracle);
+        const double side = at.angle + kPi * 0.5;
+        world.get<Transform>(player).position =
+            at.position + Vec2::fromAngle(side, world.get<Body>(oracle).radius + 60.0);
+        const Vec2 before = at.position;
+        h.step(1, {&client});
+        const Transform& after = world.get<Transform>(oracle);
+        const Vec2 step = after.position - before;
+        if (step.lengthSq() < 1e-6) continue;
+        CHECK_NEAR(angleDelta(after.angle, step.angle()), 0.0, 1e-9);
+        ++checked;
+    }
+    CHECK(checked > 60);
+    removeDataDir(dir);
+}
+
+TEST(an_npc_pool_never_moves_whatever_lands_on_it) {
+    // The one rule the damage path adds, asked of the damage path itself: a
+    // hit on an NPC LANDS -- it is not refused, it reports what it was worth
+    // -- and nothing comes off, not even a blow worth ten times the pool.
+    World world;
+    CombatSystem combat;
+    const auto body = [&](Team team, double health) {
+        const Entity e = world.create();
+        world.add<Transform>(e, Transform{{0.0, 0.0}, 0.0});
+        world.add<Body>(e, Body{20.0, 1.0});
+        world.add<Health>(e, Health{health, health, 0.0, 0.0});
+        world.add<Faction>(e, Faction{team, false});
+        return e;
+    };
+    const Entity flower = body(Team::Players, 100.0);
+    world.add<PlayerTag>(flower);
+    const Entity dummy = body(Team::Hostiles, 100.0);
+    world.add<NpcTag>(dummy);
+    // The control: the same body as a mob loses what it is hit for.
+    const Entity mob = body(Team::Hostiles, 100.0);
+    world.add<MobTag>(mob);
+
+    const DamageResult hit = combat.applyDamage(world, dummy, flower, 40.0, 1000.0);
+    CHECK(!hit.refused);
+    CHECK_NEAR(hit.applied, 40.0, 1e-9);
+    CHECK_NEAR(world.get<Health>(dummy).current, 100.0, 1e-9);
+    CHECK(world.get<Health>(dummy).flashUntilMillis > 1000.0);
+
+    const DamageResult overkill = combat.applyDamage(world, dummy, flower, 1000.0, 2000.0);
+    CHECK(!overkill.refused);
+    CHECK(!overkill.killed);
+    CHECK_NEAR(world.get<Health>(dummy).current, 100.0, 1e-9);
+    CHECK(!world.has<Dead>(dummy));
+
+    combat.applyDamage(world, mob, flower, 40.0, 1000.0);
+    CHECK_NEAR(world.get<Health>(mob).current, 60.0, 1e-9);
+}
+
+TEST(a_friendly_npc_refuses_the_hit_its_team_would_allow) {
+    // Team rules already keep a flower's petals off the oracle. What they do
+    // NOT keep off it is the other side: a mob wandering through it is a
+    // hostile body touching a player-side one. That hit is refused, where the
+    // same body without the tag -- a summon, say -- takes it.
+    World world;
+    CombatSystem combat;
+    const auto body = [&](Team team) {
+        const Entity e = world.create();
+        world.add<Transform>(e, Transform{{0.0, 0.0}, 0.0});
+        world.add<Body>(e, Body{20.0, 1.0});
+        world.add<Health>(e, Health{100.0, 100.0, 0.0, 0.0});
+        world.add<Faction>(e, Faction{team, false});
+        return e;
+    };
+    const Entity mob = body(Team::Hostiles);
+    world.add<MobTag>(mob);
+    const Entity oracle = body(Team::Players);
+    world.add<NpcTag>(oracle);
+    const Entity summon = body(Team::Players);
+
+    CHECK(!CombatSystem::canHit(world, oracle, mob, 1000.0));
+    const DamageResult refused = combat.applyDamage(world, oracle, mob, 30.0, 1000.0);
+    CHECK(refused.refused);
+    CHECK_EQ(world.get<Health>(oracle).flashUntilMillis, 0.0);
+
+    CHECK(CombatSystem::canHit(world, summon, mob, 1000.0));
+    CHECK(!combat.applyDamage(world, summon, mob, 30.0, 1000.0).refused);
+}
+
+TEST(a_hostile_npc_takes_every_hit_and_a_friendly_one_refuses_them) {
+    // The dummy stands on the hostiles' side, so a flower's ring hits it:
+    // every hit flashes it and is numbered for the DPS readout, and its pool
+    // stays full. The oracle, beside it, is on the players' side, and the same
+    // ring passing through it lands nothing at all.
+    const double dummyX = kTileSize * 8.0;
+    const double oracleX = kTileSize * 14.0;
+    const double y = kTileSize * 8.0;
+    const std::string dir = npcWorld("npc-hits", fixtureNpc(dummyX, y, "target_dummy", "common") +
+                                                    "," + fixtureNpc(oracleX, y, "oracle", "common"));
+    Harness h("npc-hits", {}, dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+
+    // A registered account, so it wears the starter ring of five basics.
+    NetClient client;
+    CHECK(loginNew(h, client, "hitter", "password7"));
+    client.joinGame(1920, 1080, {}, "hitter");
+    CHECK(h.stepUntil({&client}, [&] { return client.status() == NetClient::Status::Playing; },
+                      200));
+    h.step(3, {&client});
+    World& world = h.server.world();
+    const Entity dummy = npcWearing(world, "target_dummy");
+    const Entity oracle = npcWearing(world, "oracle");
+    const Entity player = onlyPlayer(world);
+    if (dummy == NULL_ENTITY || oracle == NULL_ENTITY || player == NULL_ENTITY) {
+        CHECK(false);
+        removeDataDir(dir);
+        return;
+    }
+    CHECK(world.get<Faction>(dummy).team == Team::Hostiles);
+    const std::uint32_t dummyId = world.get<NetId>(dummy).value;
+    const std::uint32_t oracleId = world.get<NetId>(oracle).value;
+    const double dummyMax = world.get<Health>(dummy).max;
+    const double oracleMax = world.get<Health>(oracle).max;
+
+    // Each NPC in turn sits on the ring's own orbit, so the five petals sweep
+    // straight through it.
+    const auto standBeside = [&](double npcX) {
+        client.view().events().clear();
+        for (int i = 0; i < 90; ++i) {
+            world.get<Transform>(player).position = Vec2{npcX - kPetalOrbitRestRadius, y};
+            h.step(1, {&client});
+        }
+    };
+    const auto numbered = [&](std::uint32_t netId) {
+        int count = 0;
+        for (const ViewEvent& event : client.view().events()) {
+            if (event.kind == net::EventKind::Damage && event.netId == netId && event.amount > 0) {
+                ++count;
+            }
+        }
+        return count;
+    };
+
+    standBeside(dummyX);
+    CHECK(numbered(dummyId) > 3);
+    CHECK(world.get<Health>(dummy).flashUntilMillis > 0.0);
+    CHECK_NEAR(world.get<Health>(dummy).current, dummyMax, 1e-9);
+    CHECK(!world.has<Dead>(dummy));
+
+    standBeside(oracleX);
+    CHECK_EQ(numbered(oracleId), 0);
+    CHECK_EQ(world.get<Health>(oracle).flashUntilMillis, 0.0);
+    CHECK_NEAR(world.get<Health>(oracle).current, oracleMax, 1e-9);
+    removeDataDir(dir);
+}
+
+TEST(a_flower_cannot_walk_through_an_npc) {
+    // The dummy stands still, which makes it the clean case: a flower put down
+    // on its centre, and one pressing into its side, both end the tick just
+    // clear of its body -- and the dummy is where it was.
+    const double dummyX = kTileSize * 8.0;
+    const double y = kTileSize * 8.0;
+    const std::string dir =
+        npcWorld("npc-solid", fixtureNpc(dummyX, y, "target_dummy", "common"));
+    Harness h("npc-solid", [](const std::string& path) { seedAccount(path, "seer"); }, dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+
+    NetClient client;
+    CHECK(joinAs(h, client, "seer"));
+    h.step(3, {&client});
+    World& world = h.server.world();
+    const Entity dummy = npcWearing(world, "target_dummy");
+    const Entity player = onlyPlayer(world);
+    if (dummy == NULL_ENTITY || player == NULL_ENTITY) {
+        CHECK(false);
+        removeDataDir(dir);
+        return;
+    }
+    CHECK(!world.get<Npc>(dummy).cruises);
+    const Vec2 home = world.get<Transform>(dummy).position;
+    const double reach = world.get<Body>(dummy).radius + world.get<Body>(player).radius;
+
+    for (const Vec2 start : {home, home + Vec2{-reach * 0.5, 3.0}, home + Vec2{0.0, reach - 2.0}}) {
+        world.get<Transform>(player).position = start;
+        h.step(1, {&client});
+        const Vec2 after = world.get<Transform>(player).position;
+        CHECK(distance(after, home) >= reach - 1e-6);
+        // Out the near side, not through to the far one.
+        if (start.x != home.x || start.y != home.y) {
+            CHECK((after - home).x * (start - home).x + (after - home).y * (start - home).y > 0.0);
+        }
+    }
+    CHECK_NEAR(world.get<Transform>(dummy).position.x, home.x, 1e-9);
+    CHECK_NEAR(world.get<Transform>(dummy).position.y, home.y, 1e-9);
+    removeDataDir(dir);
+}
+
+TEST(the_oracle_cruises_about_its_home_like_a_bee) {
+    const std::string dir = oracleWorld("npc-cruise");
+    Harness h("npc-cruise", [](const std::string& path) { seedAccount(path, "seer"); }, dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+
+    NetClient client;
+    CHECK(joinAs(h, client, "seer"));
+    h.step(2, {&client});
+    World& world = h.server.world();
+    const Entity oracle = npcWearing(world, "oracle");
+    const Entity player = onlyPlayer(world);
+    if (oracle == NULL_ENTITY || player == NULL_ENTITY) { CHECK(false); removeDataDir(dir); return; }
+    CHECK(world.get<Npc>(oracle).cruises);
+    const Vec2 home = world.get<Npc>(oracle).home;
+
+    // Nobody near: the flower is parked across the field, far out of its watch.
+    const Vec2 away{kTileSize * 20.0, kTileSize * 20.0};
+    double travelled = 0.0;
+    double farthest = 0.0;
+    Vec2 last = world.get<Transform>(oracle).position;
+    for (int i = 0; i < 900; ++i) {
+        world.get<Transform>(player).position = away;
+        const Vec2 previous = world.get<Transform>(oracle).position;
+        h.step(1, {&client});
+        const Transform& at = world.get<Transform>(oracle);
+        travelled += distance(at.position, last);
+        last = at.position;
+        farthest = std::max(farthest, distance(at.position, home));
+        // A cruiser looks along the step it just took.
+        if (distance(at.position, previous) > 1e-6) {
+            CHECK_NEAR(angleDelta(at.angle, (at.position - previous).angle()), 0.0, 1e-9);
+        }
+    }
+    // It really does fly -- thirty seconds of cruising covers ground -- and it
+    // never strays much past its leash: the turn back is a curve, not a wall.
+    CHECK(travelled > 300.0);
+    CHECK(farthest < kNpcLeashRadius + 200.0);
+    removeDataDir(dir);
+}
+
+TEST(an_npc_the_map_placed_comes_back_and_killall_leaves_it_alone) {
+    const std::string dir = oracleWorld("npc-return");
+    Harness h("npc-return", [](const std::string& path) { seedAccount(path, "boss", true); },
+              dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+
+    NetClient client;
+    CHECK(joinAs(h, client, "boss"));
+    h.step(3, {&client});
+    World& world = h.server.world();
+    CHECK_EQ(npcsIn(world).size(), std::size_t(1));
+
+    // Wild mobs are cleared; the NPC is not a wild mob.
+    client.sendChat("/admin killall");
+    h.step(4, {&client});
+    CHECK_EQ(npcsIn(world).size(), std::size_t(1));
+
+    // Clearing the NPCs is honoured -- and the map's own is back on the tick
+    // after, because it is part of the map.
+    const Entity before = npcsIn(world)[0];
+    client.sendChat("/admin clear_npcs");
+    CHECK(h.stepUntil({&client}, [&] {
+        const std::vector<Entity> now = npcsIn(world);
+        return now.size() == 1 && now[0] != before;
+    }, 30));
+    removeDataDir(dir);
+}
+
+TEST(spawn_makes_the_oracle_an_enemy_and_spawn_npc_a_friend) {
+    const std::string dir = oracleWorld("npc-admin");
+    Harness h("npc-admin", [](const std::string& path) { seedAccount(path, "boss", true); },
+              dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+
+    NetClient client;
+    CHECK(joinAs(h, client, "boss"));
+    h.step(3, {&client});
+    World& world = h.server.world();
+    const std::uint16_t oracle = content().mobIndex("oracle");
+
+    // `spawn` is the ENEMY: an ordinary mob wearing the oracle's config, on
+    // the hostile team, thinking like any other. Put down across the field,
+    // well outside its aggro range: a rare one bites hard enough to put the
+    // admin on the death card before the next command.
+    client.sendChat("/admin spawn oracle rare 4000 4000");
+    CHECK(h.stepUntil({&client}, [&] {
+        bool found = false;
+        Query<MobTag, MobType> mobs{world};
+        mobs.each([&](Entity e, MobTag&, MobType& type) {
+            if (type.configIndex != oracle) return;
+            found = type.rarity == Rarity::Rare && world.get<Faction>(e).team == Team::Hostiles &&
+                    world.has<MobAi>(e) && world.has<Health>(e) && !world.has<Npc>(e);
+        });
+        return found;
+    }, 30));
+
+    // `spawn_npc` is the FRIEND, where the admin stands.
+    const std::size_t npcsBefore = npcsIn(world).size();
+    client.sendChat("/admin spawn_npc oracle legendary");
+    CHECK(h.stepUntil({&client}, [&] { return npcsIn(world).size() == npcsBefore + 1; }, 30));
+    bool placed = false;
+    for (const Entity e : npcsIn(world)) {
+        if (world.get<Npc>(e).rarity == Rarity::Legendary) placed = true;
+    }
+    CHECK(placed);
+
+    // The target dummy is an NPC too, on its own side.
+    client.sendChat("/admin spawn_npc target_dummy");
+    CHECK(h.stepUntil({&client}, [&] { return npcsIn(world).size() == npcsBefore + 2; }, 30));
+    const Entity dummy = npcWearing(world, "target_dummy");
+    CHECK(dummy != NULL_ENTITY && world.get<Faction>(dummy).team == Team::Hostiles);
+
+    // A mob with no `npc` block cannot be one.
+    client.sendChat("/admin spawn_npc bee");
+    h.step(10, {&client});
+    CHECK_EQ(npcsIn(world).size(), npcsBefore + 2);
+    removeDataDir(dir);
+}
+
+// ---------------------------------------------------------------------------
+// The service
+// ---------------------------------------------------------------------------
+
+TEST(an_oracle_craft_is_certain_and_costs_exactly_its_price) {
+    const std::string dir = oracleWorld("oracle-craft");
+    Harness h("oracle-craft", [](const std::string& path) {
+        seedAccount(path, "seer");
+        seedStack(path, "seer", "petal_rose", Rarity::Common, 20);
+    }, dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+    const std::uint16_t rose = content().petalIndex("rose");
+    if (rose == kInvalidIndex) { CHECK(false); removeDataDir(dir); return; }
+
+    NetClient client;
+    CHECK(joinAs(h, client, "seer"));
+    h.step(3, {&client});
+    CHECK(awaitProfile(h, client, [&](const Profile& p) {
+        return p.stackCount(rose, Rarity::Common) == 20u;
+    }));
+    CHECK_EQ(client.oracleCooldownRemainingMillis(), 0.0);
+
+    // One upgrade for seven: seven in, one out, no roll anywhere.
+    OracleOutcome outcome;
+    standBeside(h, client, "oracle");
+    client.requestOracleCraft(rose, Rarity::Common);
+    CHECK(awaitOracle(h, client, outcome));
+    CHECK(outcome.success);
+    CHECK_EQ(outcome.crafted, 1);
+    CHECK_EQ(outcome.spent, 7u);
+    CHECK(outcome.rarity == Rarity::Uncommon);
+    CHECK(awaitProfile(h, client, [&](const Profile& p) {
+        return p.stackCount(rose, Rarity::Common) == 13u &&
+               p.stackCount(rose, Rarity::Uncommon) == 1u;
+    }));
+    removeDataDir(dir);
+}
+
+TEST(the_oracle_refuses_a_short_stack_and_apex_and_neither_starts_the_wait) {
+    const std::string dir = oracleWorld("oracle-refuse");
+    Harness h("oracle-refuse", [](const std::string& path) {
+        seedAccount(path, "seer");
+        seedStack(path, "seer", "petal_rose", Rarity::Common, 6);
+        seedStack(path, "seer", "petal_rose", Rarity::Uncommon, 11);
+        seedStack(path, "seer", "petal_rose", Rarity::Apex, 3000);
+    }, dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+    const std::uint16_t rose = content().petalIndex("rose");
+
+    NetClient client;
+    CHECK(joinAs(h, client, "seer"));
+    h.step(3, {&client});
+
+    OracleOutcome outcome;
+    // Six is not seven: all or nothing, never a part. Standing at the oracle
+    // each time, so every refusal is for its own reason and not for reach.
+    standBeside(h, client, "oracle");
+    client.requestOracleCraft(rose, Rarity::Common);
+    CHECK(awaitOracle(h, client, outcome));
+    CHECK(!outcome.success);
+    CHECK_EQ(outcome.spent, 0u);
+    // Nothing crafts out of apex, however many are offered.
+    standBeside(h, client, "oracle");
+    client.requestOracleCraft(rose, Rarity::Apex);
+    CHECK(awaitOracle(h, client, outcome));
+    CHECK(!outcome.success);
+
+    h.step(5, {&client});
+    CHECK_EQ(client.profile().stackCount(rose, Rarity::Common), 6u);
+    CHECK_EQ(client.profile().stackCount(rose, Rarity::Apex), 3000u);
+    CHECK_EQ(client.oracleCooldownRemainingMillis(), 0.0);
+
+    // A refusal is not a craft: the wait has not started, and a craft the
+    // stack CAN pay for still goes through.
+    standBeside(h, client, "oracle");
+    client.requestOracleCraft(rose, Rarity::Uncommon);
+    CHECK(awaitOracle(h, client, outcome));
+    CHECK(outcome.success);
+    removeDataDir(dir);
+}
+
+TEST(the_oracle_serves_only_a_flower_standing_at_it) {
+    const std::string dir = oracleWorld("oracle-far");
+    Harness h("oracle-far", [](const std::string& path) {
+        seedAccount(path, "seer");
+        seedStack(path, "seer", "petal_rose", Rarity::Common, 20);
+    }, dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+    const std::uint16_t rose = content().petalIndex("rose");
+
+    NetClient client;
+    CHECK(connectClient(h, client));
+    client.requestLogin("seer", "password7");
+    CHECK(h.stepUntil({&client}, [&] { return client.status() == NetClient::Status::LoggedIn; }));
+
+    // On the title screen there is no body to be standing anywhere.
+    OracleOutcome outcome;
+    client.requestOracleCraft(rose, Rarity::Common);
+    CHECK(awaitOracle(h, client, outcome));
+    CHECK(!outcome.success);
+
+    client.joinGame(1920, 1080, {}, "seer");
+    CHECK(h.stepUntil({&client}, [&] { return client.status() == NetClient::Status::Playing; },
+                      200));
+    h.step(3, {&client});
+    World& world = h.server.world();
+    const Entity player = onlyPlayer(world);
+    if (player == NULL_ENTITY) { CHECK(false); removeDataDir(dir); return; }
+    const double radius =
+        content().mobStats(content().mobIndex("oracle"), Rarity::Epic).radius;
+
+    // Just outside what the server allows -- the reach and its slack, from the
+    // oracle's skin, wherever it has cruised to -- is refused...
+    const Entity oracle = npcWearing(world, "oracle");
+    if (oracle == NULL_ENTITY) { CHECK(false); removeDataDir(dir); return; }
+    Vec2 at = world.get<Transform>(oracle).position;
+    world.get<Transform>(player).position =
+        Vec2{at.x + radius + kNpcServiceReach + kNpcServiceSlack + 40.0, at.y};
+    h.step(1, {&client});
+    client.requestOracleCraft(rose, Rarity::Common);
+    CHECK(awaitOracle(h, client, outcome));
+    CHECK(!outcome.success);
+    CHECK(outcome.reason.find("far") != std::string::npos);
+
+    // ...and just inside it is served, slack included: the client measured a
+    // drawn position a snapshot old, and that must not cost the player.
+    at = world.get<Transform>(oracle).position;
+    world.get<Transform>(player).position =
+        Vec2{at.x + radius + kNpcServiceReach + kNpcServiceSlack - 40.0, at.y};
+    h.step(1, {&client});
+    client.requestOracleCraft(rose, Rarity::Common);
+    CHECK(awaitOracle(h, client, outcome));
+    CHECK(outcome.success);
+    CHECK(awaitProfile(h, client, [&](const Profile& p) {
+        return p.stackCount(rose, Rarity::Common) == 13u &&
+               p.stackCount(rose, Rarity::Uncommon) == 1u;
+    }));
+    removeDataDir(dir);
+}
+
+TEST(a_super_bought_from_the_oracle_is_announced) {
+    const std::string dir = oracleWorld("oracle-announce");
+    Harness h("oracle-announce", [](const std::string& path) {
+        seedAccount(path, "seer");
+        seedStack(path, "seer", "petal_rose", Rarity::Ultra, 253);
+    }, dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+    const std::uint16_t rose = content().petalIndex("rose");
+
+    NetClient client;
+    CHECK(joinAs(h, client, "seer"));
+    h.step(3, {&client});
+    const std::size_t chatBefore = client.chat().size();
+
+    OracleOutcome outcome;
+    standBeside(h, client, "oracle");
+    client.requestOracleCraft(rose, Rarity::Ultra);
+    CHECK(awaitOracle(h, client, outcome));
+    CHECK(outcome.success);
+    CHECK(outcome.rarity == Rarity::Super);
+    CHECK(h.stepUntil({&client}, [&] {
+        for (std::size_t i = chatBefore; i < client.chat().size(); ++i) {
+            if (client.chat()[i].text.find("has been crafted by") != std::string::npos) return true;
+        }
+        return false;
+    }, 60));
+    removeDataDir(dir);
+}
+
+// ---------------------------------------------------------------------------
+// The wait between crafts
+// ---------------------------------------------------------------------------
+
+TEST(the_wait_is_said_in_whole_minutes_rounded_up) {
+    // The reference's own sentence. Rounded up, so a wait of seconds reads as
+    // a minute and never as zero.
+    CHECK_EQ(oracleCooldownText(27.0 * 60000.0),
+             std::string("You'll be able to craft again in 27 minutes"));
+    CHECK_EQ(oracleCooldownText(26.2 * 60000.0),
+             std::string("You'll be able to craft again in 27 minutes"));
+    CHECK_EQ(oracleCooldownText(kOracleCooldownMillis),
+             std::string("You'll be able to craft again in 30 minutes"));
+    CHECK_EQ(oracleCooldownText(60000.0), std::string("You'll be able to craft again in 1 minute"));
+    CHECK_EQ(oracleCooldownText(1.0), std::string("You'll be able to craft again in 1 minute"));
+}
+
+TEST(the_oracle_grants_one_craft_every_thirty_minutes) {
+    const std::string dir = oracleWorld("oracle-wait");
+    Harness h("oracle-wait", [](const std::string& path) {
+        seedAccount(path, "seer");
+        seedStack(path, "seer", "petal_rose", Rarity::Common, 20);
+    }, dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+    const std::uint16_t rose = content().petalIndex("rose");
+
+    NetClient client;
+    CHECK(joinAs(h, client, "seer"));
+    h.step(3, {&client});
+
+    OracleOutcome outcome;
+    standBeside(h, client, "oracle");
+    client.requestOracleCraft(rose, Rarity::Common);
+    CHECK(awaitOracle(h, client, outcome));
+    CHECK(outcome.success);
+
+    // The craft started the half hour, and the profile that followed it says
+    // so -- which is what turns the panel's line red.
+    CHECK(awaitProfile(h, client, [&](const Profile& p) {
+        return p.stackCount(rose, Rarity::Uncommon) == 1u;
+    }));
+    const double wait = client.oracleCooldownRemainingMillis();
+    CHECK(wait > kOracleCooldownMillis - 60000.0);
+    CHECK(wait <= kOracleCooldownMillis);
+
+    // The next one is refused in the panel's own words, and costs nothing.
+    standBeside(h, client, "oracle");
+    client.requestOracleCraft(rose, Rarity::Common);
+    CHECK(awaitOracle(h, client, outcome));
+    CHECK(!outcome.success);
+    CHECK_EQ(outcome.reason, std::string("You'll be able to craft again in 30 minutes"));
+    h.step(5, {&client});
+    CHECK_EQ(client.profile().stackCount(rose, Rarity::Common), 13u);
+    CHECK_EQ(client.profile().stackCount(rose, Rarity::Uncommon), 1u);
+
+    removeDataDir(dir);
+}
+
+TEST(the_oracle_wait_is_the_accounts_across_a_relog_and_ends_on_the_server_clock) {
+    const std::string dir = oracleWorld("oracle-wait-kept");
+    Harness h("oracle-wait-kept", [](const std::string& path) {
+        seedAccount(path, "seer");
+        seedStack(path, "seer", "petal_rose", Rarity::Common, 30);
+    }, dir, 0);
+    if (!h.ready) { CHECK(false); removeDataDir(dir); return; }
+    const std::uint16_t rose = content().petalIndex("rose");
+
+    {
+        NetClient client;
+        CHECK(joinAs(h, client, "seer"));
+        h.step(3, {&client});
+        OracleOutcome outcome;
+        standBeside(h, client, "oracle");
+        client.requestOracleCraft(rose, Rarity::Common);
+        CHECK(awaitOracle(h, client, outcome));
+        CHECK(outcome.success);
+        client.disconnect();
+        h.step(10, {});
+    }
+
+    // A new connection is the same account, so the wait came with it: the
+    // join's profile already carries it, and the craft is refused.
+    NetClient client;
+    CHECK(joinAs(h, client, "seer"));
+    h.step(3, {&client});
+    CHECK(client.oracleCooldownRemainingMillis() > kOracleCooldownMillis - 60000.0);
+    OracleOutcome outcome;
+    standBeside(h, client, "oracle");
+    client.requestOracleCraft(rose, Rarity::Common);
+    CHECK(awaitOracle(h, client, outcome));
+    CHECK(!outcome.success);
+
+    // The wait is measured on the server's own tick clock, so moving that
+    // clock is the whole of "half an hour later". A minute and a half short,
+    // what is left rounds up to two...
+    h.clock += kOracleCooldownMillis - 90000.0;
+    h.step(3, {&client});
+    standBeside(h, client, "oracle");
+    client.requestOracleCraft(rose, Rarity::Common);
+    CHECK(awaitOracle(h, client, outcome));
+    CHECK(!outcome.success);
+    CHECK_EQ(outcome.reason, std::string("You'll be able to craft again in 2 minutes"));
+
+    // ...and past it, the oracle serves again.
+    h.clock += 120000.0;
+    h.step(3, {&client});
+    standBeside(h, client, "oracle");
+    client.requestOracleCraft(rose, Rarity::Common);
+    CHECK(awaitOracle(h, client, outcome));
+    CHECK(outcome.success);
+    CHECK(awaitProfile(h, client, [&](const Profile& p) {
+        return p.stackCount(rose, Rarity::Uncommon) == 2u;
+    }));
+    CHECK_EQ(client.profile().stackCount(rose, Rarity::Common), 16u);
+    removeDataDir(dir);
+}
+
+// ---------------------------------------------------------------------------
+// On screen
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr int kFrame = 200;
+
+/// How many pixels of the oracle's pupil colour sit left and right of `cx`.
+struct PupilSides {
+    int left = 0;
+    int right = 0;
+    int outsideSocket = 0;
+};
+
+PupilSides pupilSides(const std::vector<std::uint8_t>& pixels, double cx, double cy,
+                      double socketRadius) {
+    PupilSides out;
+    for (int y = 0; y < kFrame; ++y) {
+        for (int x = 0; x < kFrame; ++x) {
+            const std::size_t i = static_cast<std::size_t>((y * kFrame + x) * 4);
+            if (pixels[i] != 0xEE || pixels[i + 1] != 0xEE || pixels[i + 2] != 0xEE) continue;
+            const double dx = x + 0.5 - cx;
+            const double dy = y + 0.5 - cy;
+            if (dx < 0) ++out.left;
+            else ++out.right;
+            if (dx * dx + dy * dy > socketRadius * socketRadius) ++out.outsideSocket;
+        }
+    }
+    return out;
+}
+
+const SpriteCache& shippedSprites() {
+    static const SpriteCache sprites = [] {
+        ensureShippedContent();
+        SpriteCache cache;
+        cache.build(content(), dataDir());
+        return cache;
+    }();
+    return sprites;
+}
+
+} // namespace
+
+TEST(the_oracle_painter_puts_its_pupil_where_it_looks_and_keeps_it_in_the_socket) {
+    CHECK(ensureShippedContent());
+    const std::uint16_t oracle = content().mobIndex("oracle");
+    const SpriteCache& sprites = shippedSprites();
+    CHECK(sprites.mobArt(oracle) == MobArt::Oracle);
+    CHECK(sprites.mobDrawable(oracle));
+
+    // A body 100 across in a 200 frame: the socket is 15/28 of the radius.
+    const double diameter = 100.0;
+    const double socket = 15.0 / 28.0 * diameter * 0.5;
+    const auto frame = [&](Vec2 gaze) {
+        Canvas canvas = Canvas::createVirtual(kFrame, kFrame);
+        sprites.drawMob(canvas, oracle, kFrame * 0.5, kFrame * 0.5, diameter, 0.0, 0.0, false, 0.0,
+                        gaze);
+        return canvas.getImageData(0, 0, kFrame, kFrame);
+    };
+
+    const PupilSides east = pupilSides(frame({1.0, 0.0}), kFrame * 0.5, kFrame * 0.5, socket);
+    const PupilSides west = pupilSides(frame({-1.0, 0.0}), kFrame * 0.5, kFrame * 0.5, socket);
+    CHECK(east.right > east.left * 2);
+    CHECK(west.left > west.right * 2);
+    // A gaze longer than one is clamped: the pupil runs to the rim and stops.
+    const PupilSides wild = pupilSides(frame({40.0, 0.0}), kFrame * 0.5, kFrame * 0.5, socket);
+    CHECK(wild.right > 0);
+    CHECK_EQ(wild.outsideSocket, 0);
+    CHECK_EQ(east.outsideSocket, 0);
+}
+
+TEST(an_npc_is_drawn_with_its_eye_on_its_facing_and_an_invulnerable_bar) {
+    CHECK(ensureShippedContent());
+    const std::uint16_t oracle = content().mobIndex("oracle");
+    const Vec2 at{1000.0, 1000.0};
+    const auto frame = [&](net::EntityKind kind, double angle) {
+        Canvas canvas = Canvas::createVirtual(kFrame, kFrame);
+        WorldView view;
+        view.setRealm(Realm::Overworld);
+        RemoteEntity npc;
+        npc.netId = 42;
+        npc.kind = kind;
+        npc.typeIndex = oracle;
+        npc.rarity = Rarity::Common;
+        npc.position = npc.targetPosition = at;
+        npc.angle = npc.targetAngle = angle;
+        npc.needsSnap = false;
+        npc.radius = content().mobStats(oracle, Rarity::Common).radius;
+        npc.healthFraction = 0.5;
+        view.seedForTest(npc);
+        WorldRenderer renderer;
+        renderer.setContent(&content());
+        renderer.setSprites(&shippedSprites());
+        Camera camera;
+        camera.setViewport(kFrame, kFrame);
+        camera.userZoom = 1.0;
+        camera.snapTo(at);
+        renderer.draw(canvas, view, camera, at, 0.0);
+        return canvas.getImageData(0, 0, kFrame, kFrame);
+    };
+    const auto healthPixels = [](const std::vector<std::uint8_t>& pixels) {
+        const std::uint8_t r = (ui::kHealth >> 16) & 0xFF;
+        const std::uint8_t g = (ui::kHealth >> 8) & 0xFF;
+        const std::uint8_t b = ui::kHealth & 0xFF;
+        int found = 0;
+        for (std::size_t i = 0; i + 2 < pixels.size(); i += 4) {
+            if (pixels[i] == r && pixels[i + 1] == g && pixels[i + 2] == b) ++found;
+        }
+        return found;
+    };
+
+    // The body is upright; the facing is where the EYE goes.
+    const double socket = 15.0 / 28.0 * content().mobStats(oracle, Rarity::Common).radius;
+    const PupilSides lookingWest =
+        pupilSides(frame(net::EntityKind::Npc, kPi), kFrame * 0.5, kFrame * 0.5, socket + 1.0);
+    const PupilSides lookingEast =
+        pupilSides(frame(net::EntityKind::Npc, 0.0), kFrame * 0.5, kFrame * 0.5, socket + 1.0);
+    CHECK(lookingWest.left > lookingWest.right * 2);
+    CHECK(lookingEast.right > lookingEast.left * 2);
+
+    // The mob's plate, with the bar in its invulnerable state: no green, and
+    // the spawn-shield yellow a flower's bar turns, the whole width of the bar
+    // even though the wire says half -- where the same creature as a mob wears
+    // half a green bar.
+    const auto colourPixels = [](const std::vector<std::uint8_t>& pixels, std::uint32_t colour) {
+        const std::uint8_t r = (colour >> 16) & 0xFF;
+        const std::uint8_t g = (colour >> 8) & 0xFF;
+        const std::uint8_t b = colour & 0xFF;
+        int found = 0;
+        for (std::size_t i = 0; i + 2 < pixels.size(); i += 4) {
+            if (pixels[i] == r && pixels[i + 1] == g && pixels[i + 2] == b) ++found;
+        }
+        return found;
+    };
+    constexpr std::uint32_t kInvulnerable = 0xFAFFC9u;
+    const std::vector<std::uint8_t> npcFrame = frame(net::EntityKind::Npc, 0.0);
+    const std::vector<std::uint8_t> mobFrame = frame(net::EntityKind::Mob, 0.0);
+    CHECK_EQ(healthPixels(npcFrame), 0);
+    CHECK(colourPixels(npcFrame, kInvulnerable) > 0);
+    CHECK(healthPixels(mobFrame) > 0);
+    CHECK_EQ(colourPixels(mobFrame, kInvulnerable), 0);
+    // Full width: yellow on both sides of the body's centre line.
+    int left = 0;
+    int right = 0;
+    for (int y = 0; y < kFrame; ++y) {
+        for (int x = 0; x < kFrame; ++x) {
+            const std::size_t i = static_cast<std::size_t>((y * kFrame + x) * 4);
+            if (npcFrame[i] != 0xFA || npcFrame[i + 1] != 0xFF || npcFrame[i + 2] != 0xC9) continue;
+            if (x < kFrame / 2 - 10) ++left;
+            if (x > kFrame / 2 + 10) ++right;
+        }
+    }
+    CHECK(left > 0);
+    CHECK(right > 0);
+}

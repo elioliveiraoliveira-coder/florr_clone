@@ -36,6 +36,12 @@ inline constexpr std::uint32_t kCloseRim = 0x8D4A47u;
 
 inline constexpr PanelSkin kInventorySkin{0x6B9DD6u, 0x5680ADu, 0x5680ADu};
 inline constexpr PanelSkin kCraftingSkin{0xDB9D5Bu, 0xB17F48u, 0xB17F48u};
+/// The oracle is the forge's other face -- the same key opens it while the
+/// flower stands at one -- so it has to be told apart at a glance. Its slate
+/// is the reference shot's (oracle_screenshot_menu.png), card and border both;
+/// the border's slate is also what an empty slot, an empty cell and the scroll
+/// thumb are filled with there.
+inline constexpr PanelSkin kOracleSkin{0x6D859Cu, 0x586C7Eu, 0x586C7Eu};
 inline constexpr PanelSkin kGallerySkin{0xE6D64Cu, 0xA89D36u, 0xA89D36u};
 /// The talent card is the one panel drawn against a reference screenshot
 /// rather than the browser build's CSS, so its body is that shot's dusty red

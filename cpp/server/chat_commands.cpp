@@ -34,6 +34,7 @@
 #include "server/auto_update.h"
 #include "server/bot_identity.h"
 #include "server/guilds.h"
+#include "server/systems/npcs.h"
 #include "server/systems/spawning.h"
 #include "server/text.h"
 #include "shared/game/config.h"
@@ -741,7 +742,9 @@ bool GameServer::handleChatCommand(Session& session, net::Connection& connection
                     "set_max_enemies, set_bot_count &lt;0-" + std::to_string(kMaxBots) +
                     "|default&gt;, bots (what the bot population is doing), squads (who the "
                     "loot rule pools), spawn &lt;mobType&gt; &lt;rarity&gt; "
-                    "[x] [y] [amount] [stack|unstack], killall (kill all wild mobs), teleport "
+                    "[x] [y] [amount] [stack|unstack], spawn_npc &lt;mobType&gt; [rarity] "
+                    "(an NPC where you stand), clear_npcs, killall (kill all wild "
+                    "mobs), teleport "
                     "&lt;playerId/username&gt; &lt;x&gt; &lt;y&gt;, teleport_all &lt;x&gt; "
                     "&lt;y&gt; (move every player and bot), teleport_bots &lt;x&gt; &lt;y&gt; "
                     "(move every bot only), give &lt;playerId/username&gt; &lt;itemType&gt; "
@@ -1479,6 +1482,72 @@ void GameServer::runAdminCommand(Session& session, net::Connection& connection,
         out("Spawned " + (count > 1 ? std::to_string(count) + "x " : std::string()) + words[2] +
             " " + words[1] + where +
             (count > 1 ? (stack ? ", stacked" : ", unstacked") : ""));
+        return;
+    }
+
+    if (verb == "spawn_npc") {
+        // The NPC half of a creature `spawn` makes an enemy of: the same
+        // mobs.json entry, standing on the side its `npc` block names and
+        // offering its service, where the admin is standing. For the places a
+        // map cannot put one -- the maze and the arena are generated -- and
+        // for trying an NPC out before drawing it into a map. Not persisted:
+        // the maps are where a permanent one belongs.
+        if (words.size() < 2) {
+            std::string npcTypes;
+            for (std::size_t i = 0; i < content().mobCount(); ++i) {
+                const MobConfig& mob = content().mob(static_cast<std::uint16_t>(i));
+                if (!mob.npc.present) continue;
+                if (!npcTypes.empty()) npcTypes += ", ";
+                npcTypes += mob.id;
+            }
+            out("Usage: spawn_npc <mobType> [rarity]");
+            out("  Places an NPC where you stand. `spawn` makes the same mob a wild enemy.");
+            out("Mobs that can be NPCs: " + (npcTypes.empty() ? std::string("none") : npcTypes));
+            return;
+        }
+        const std::uint16_t mobIndex = content().mobIndex(words[1]);
+        if (mobIndex == kInvalidIndex) {
+            out("Unknown mob type \"" + words[1] + "\".");
+            return;
+        }
+        if (!content().mob(mobIndex).npc.present) {
+            out(words[1] + " is not an NPC (mobs.json gives it no `npc` block). Use spawn to "
+                "put one down as a mob.");
+            return;
+        }
+        Rarity rarity = Rarity::Common;
+        if (words.size() >= 3 && !parseRarityStrict(words[2], rarity)) {
+            out("Invalid rarity \"" + words[2] + "\".");
+            return;
+        }
+        const Transform* mine = session.playing() && world_.isAlive(session.entity)
+                                    ? world_.tryGet<Transform>(session.entity)
+                                    : nullptr;
+        if (mine == nullptr) {
+            out("spawn_npc puts the NPC where you are standing; join a game first.");
+            return;
+        }
+        // Copied out: the spawn's create relocates rows under the pointer.
+        const Vec2 at = mine->position;
+        const Realm realm = mine->realm;
+        npcs_->spawnNpc(world_, *terrain_, content(), mobIndex, rarity, at, realm, clockMillis_);
+        out("Placed a " + std::string(rarityName(rarity)) + " " + words[1] +
+            " NPC at your location");
+        return;
+    }
+
+    if (verb == "clear_npcs") {
+        // Every NPC, map-placed or not. The map's own are back on the next
+        // tick -- they are part of the map -- so what this really clears is
+        // whatever spawn_npc put down.
+        int removed = 0;
+        Query<NpcTag> npcs{world_};
+        npcs.each([&](Entity entity, NpcTag&) {
+            commands_.destroy(entity);
+            ++removed;
+        });
+        out("Removed " + plural(removed, "NPC", "NPCs") +
+            " (the ones the maps place come straight back)");
         return;
     }
 

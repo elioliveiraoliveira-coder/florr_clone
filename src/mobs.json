@@ -1224,6 +1224,9 @@
         "ai_type": "passive",
         "range": 100,
         "hideRotation": true,
+        "npc": {
+            "team": "hostile"
+        },
         "noEggDrop": true
     },
     "fly": {
@@ -1987,5 +1990,34 @@
         "ai_type": "hostile",
         "range": 600,
         "hideRotation": true
+    },
+    "oracle": {
+        "name": "Oracle",
+        "damage": 20,
+        "health": 150,
+        "size": 1.5,
+        "speed": 0.15,
+        "cooldown": 2000,
+        "xp": {
+            "common": 3,
+            "uncommon": 10,
+            "rare": 40,
+            "epic": 350,
+            "legendary": 1800,
+            "mythic": 45000,
+            "ultra": 220000,
+            "super": 1800000,
+            "unique": 9000000
+        },
+        "description": "It has already seen what you will craft",
+        "color": "#FFE763",
+        "image": "$oracle",
+        "ai_type": "hostile",
+        "range": 450,
+        "bee_ai": "idle",
+        "npc": {
+            "service": "oracle"
+        },
+        "noEggDrop": true
     }
 }

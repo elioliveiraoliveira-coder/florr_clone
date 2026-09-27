@@ -122,6 +122,7 @@ add_library(flix_server STATIC
   server/systems/spawning.cpp
   server/systems/mode_spawning.cpp
   server/systems/loot.cpp
+  server/systems/npcs.cpp
 )
 target_link_libraries(flix_server PUBLIC flix_shared)
 
@@ -153,6 +154,7 @@ add_library(flix_client STATIC
   client/ui/menus.cpp
   client/ui/menu_inventory.cpp
   client/ui/menu_crafting.cpp
+  client/ui/menu_oracle.cpp
   client/ui/menu_gallery.cpp
   client/ui/menu_guild.cpp
   client/ui/menu_talents.cpp

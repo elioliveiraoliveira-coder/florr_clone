@@ -332,6 +332,9 @@ private:
         bool chasing = false;
         /// Somebody's summon rather than a wild mob. Its plate says so.
         bool pet = false;
+        /// An NPC wearing this mob's config, not a mob at all: its plate is
+        /// the mob's, with the bar in its invulnerable state.
+        bool npc = false;
         /// Negative for a live mob; 0..1 while the death animation runs.
         double deathProgress = -1.0;
     };
@@ -340,7 +343,7 @@ private:
     /// at twice that rate, which is where the two names differ.
     void drawMobBody(Canvas&, const Camera&, const MobDraw&, double clockSeconds) const;
     /// Name, tier, health bar and (for a dummy) DPS, all below the body. A
-    /// pet's tier row also says "Summon".
+    /// pet's tier row also says "Summon"; an NPC's bar is its invulnerable one.
     void drawMobLabel(Canvas&, const Camera&, const MobDraw&) const;
     /// The digger: a grey flower carrying a spinning cutter, never its SVG.
     void drawDiggerMob(Canvas&, const MobDraw&, double radius, double timeSeconds) const;
@@ -366,6 +369,12 @@ private:
     /// look direction is recovered from how the BODY is travelling, which is
     /// the same heading the facing would have carried.
     Vec2 mobEye(const MobDraw& mob) const;
+    /// The same idea for a PAINTED eye that looks in any direction -- the
+    /// oracle's: a unit-ish vector in world space, eased toward the mob's
+    /// facing at the flower eye's own per-frame rate, so the pupil swings
+    /// across the socket the way a flower's does rather than snapping. Kept
+    /// on the MobEye beside the flower-face offset, which it never shares.
+    Vec2 mobGaze(const MobDraw& mob) const;
     /// The petal types a garbage pile may be built from: the same rule the
     /// server's drop roll uses, so both clients pick the same artwork.
     const std::vector<std::uint16_t>& droppablePetals() const;
@@ -494,6 +503,11 @@ private:
         /// The last direction worth looking along. Held while the mob stands
         /// still, so stopping does not roll the eyes back east.
         double heading = 0;
+        /// mobGaze()'s eased look, and whether it has been seeded yet --
+        /// separately from `offset`, because the entry may already exist for
+        /// another reason by the first frame this is asked.
+        Vec2 gaze;
+        bool gazeLive = false;
     };
     mutable std::unordered_map<std::uint32_t, MobEye> mobEyes_;
 

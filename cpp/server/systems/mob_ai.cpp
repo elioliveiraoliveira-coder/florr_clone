@@ -899,6 +899,19 @@ void MobAiSystem::driftPassive(World& world, Entity self, const Body& body, Moti
         return;
     }
 
+    if (const Wobble* wobble = world.tryGet<Wobble>(self)) {
+        // Bees do not hop. They cruise -- see stepBeeCruise -- and the cruise's
+        // state lives in the mob's own components: the heading in the AI, the
+        // clock in the drift machine, the phase in the Wobble.
+        BeeCruise cruise{ai.wanderAngle, passive->stateStartMillis, passive->velocity,
+                         wobble->phase};
+        passive->velocity = stepBeeCruise(cruise, speed, body.radius, nowMillis, dt, rng_);
+        ai.wanderAngle = cruise.heading;
+        passive->stateStartMillis = cruise.headingPickedMillis;
+        motion.velocity = passive->velocity;
+        return;
+    }
+
     // Distance per hop is the sum of the accelerations divided by the friction,
     // so scaling the ACCELERATION by the size factor scales how far a hop
     // carries while the phase durations stay fixed. That is what makes a big
@@ -908,58 +921,63 @@ void MobAiSystem::driftPassive(World& world, Entity self, const Body& body, Moti
     // What the drift may reach -- scaled by the same body the acceleration is,
     // because a ceiling in absolute units over an acceleration in bodies caps
     // the hop's DISTANCE and not just its speed. See kMaxWanderSpeedPerBody.
-    // A cruise has a tighter one of its own; see kBeeCruiseSpeed.
-    double limit = kMaxWanderSpeedPerBody * sizeFactor(body.radius);
+    const double limit = kMaxWanderSpeedPerBody * sizeFactor(body.radius);
 
-    if (const Wobble* wobble = world.tryGet<Wobble>(self)) {
-        // Bees do not hop. They cruise, and the heading sways at 1.5 rad/s
-        // scaled by sin(2t) -- which integrates to the +-0.75 rad weave of the
-        // flight line -- around a base heading re-picked every five seconds.
-        if (nowMillis - passive->stateStartMillis >= kBeeHeadingMillis) {
+    const double elapsed = nowMillis - passive->stateStartMillis;
+    if (passive->state == PassiveState::Idle) {
+        if (elapsed >= kPassiveIdleMillis) {
+            // The heading is drawn at the transition, so the mob turns to face
+            // it while still standing still and only then sets off.
             ai.wanderAngle = rng_.angle();
+            passive->state = PassiveState::Moving;
             passive->stateStartMillis = nowMillis;
         }
-        const double t = nowMillis / 1000.0 + wobble->phase;
-        ai.wanderAngle = wrapAngle(ai.wanderAngle + kBeeWobbleRate * std::sin(2.0 * t) * dt);
-
-        // Sustained rather than ramped, and pulsed down for the first third of
-        // every window, which is what gives the cruise its beat.
-        double magnitude = accel * kBeeCruiseAccelScale;
-        if (std::fmod(t * 1000.0, kBeePulsePeriodMillis) < kBeePulseMillis) {
-            magnitude *= kBeePulseScale;
-        }
-        push = Vec2::fromAngle(ai.wanderAngle, magnitude);
-        limit = std::min(limit, kBeeCruiseSpeed * sizeFactor(body.radius));
-    } else {
-        const double elapsed = nowMillis - passive->stateStartMillis;
-        if (passive->state == PassiveState::Idle) {
-            if (elapsed >= kPassiveIdleMillis) {
-                // The heading is drawn at the transition, so the mob turns to
-                // face it while still standing still and only then sets off.
-                ai.wanderAngle = rng_.angle();
-                passive->state = PassiveState::Moving;
-                passive->stateStartMillis = nowMillis;
-            }
-        } else if (elapsed >= kPassiveMoveMillis) {
-            passive->state = PassiveState::Idle;
-            passive->stateStartMillis = nowMillis;
-        } else if (elapsed >= kPassiveCoastMillis) {
-            // Half a second of coasting on friction alone -- the mob is in the
-            // Moving state but is not being pushed yet -- then a parabolic ramp
-            // peaking halfway through the two seconds after it.
-            const double r = (elapsed - kPassiveCoastMillis) / kPassiveRampMillis;
-            push = Vec2::fromAngle(ai.wanderAngle, accel * 2.0 * (r - r * r));
-        }
+    } else if (elapsed >= kPassiveMoveMillis) {
+        passive->state = PassiveState::Idle;
+        passive->stateStartMillis = nowMillis;
+    } else if (elapsed >= kPassiveCoastMillis) {
+        // Half a second of coasting on friction alone -- the mob is in the
+        // Moving state but is not being pushed yet -- then a parabolic ramp
+        // peaking halfway through the two seconds after it.
+        const double r = (elapsed - kPassiveCoastMillis) / kPassiveRampMillis;
+        push = Vec2::fromAngle(ai.wanderAngle, accel * 2.0 * (r - r * r));
     }
 
     // Friction is per TICK, not per second: this is a fixed-step integrator and
     // spreading it over dt changes how far every idle mob in the world travels.
     // The clamp is what stops radius-proportional acceleration from drifting an
-    // apex mob at several times a player's top speed -- `limit` above, which is
-    // the hop's ceiling or the tighter one a cruise flies under.
+    // apex mob at several times a player's top speed.
     passive->velocity =
         (passive->velocity * (1.0 - kPassiveFriction) + push).clampedLength(limit);
     motion.velocity = passive->velocity;
+}
+
+Vec2 stepBeeCruise(BeeCruise& cruise, double speed, double radius, double nowMillis, double dt,
+                   Rng& rng) {
+    const double accel = speed * kPassiveAccelScale * sizeFactor(radius);
+    // The heading sways at 1.5 rad/s scaled by sin(2t) -- which integrates to
+    // the +-0.75 rad weave of the flight line -- around a base heading
+    // re-picked every five seconds.
+    if (nowMillis - cruise.headingPickedMillis >= kBeeHeadingMillis) {
+        cruise.heading = rng.angle();
+        cruise.headingPickedMillis = nowMillis;
+    }
+    const double t = nowMillis / 1000.0 + cruise.phase;
+    cruise.heading = wrapAngle(cruise.heading + kBeeWobbleRate * std::sin(2.0 * t) * dt);
+
+    // Sustained rather than ramped, and pulsed down for the first third of
+    // every window, which is what gives the cruise its beat.
+    double magnitude = accel * kBeeCruiseAccelScale;
+    if (std::fmod(t * 1000.0, kBeePulsePeriodMillis) < kBeePulseMillis) {
+        magnitude *= kBeePulseScale;
+    }
+    const Vec2 push = Vec2::fromAngle(cruise.heading, magnitude);
+    // The hop's ceiling, and the cruise's own tighter one under it; see
+    // kBeeCruiseSpeed. Friction is per TICK, as it is for the hop.
+    const double limit = std::min(kMaxWanderSpeedPerBody * sizeFactor(radius),
+                                  kBeeCruiseSpeed * sizeFactor(radius));
+    cruise.velocity = (cruise.velocity * (1.0 - kPassiveFriction) + push).clampedLength(limit);
+    return cruise.velocity;
 }
 
 Vec2 MobAiSystem::wanderToPoint(WanderTarget& wander, Vec2 from, const Body& body, double speed,

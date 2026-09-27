@@ -470,7 +470,7 @@ const SvgDocument* SpriteCache::tileArt(const std::string& file) const {
 
 void SpriteCache::draw(Canvas& canvas, const Sprite& sprite, double x, double y, double diameter,
                        double rotation, double timeSeconds, bool mirrored,
-                       double worldRadius) const {
+                       double worldRadius, Vec2 gaze) const {
     if (diameter <= 0.5) return;   // sub-pixel; not worth the transform
 
     if (sprite.art != MobArt::None) {
@@ -486,7 +486,7 @@ void SpriteCache::draw(Canvas& canvas, const Sprite& sprite, double x, double y,
         const double fit = (diameter * 0.5) / radius;
         canvas.scale(static_cast<float>(fit), static_cast<float>(fit));
         paintMobArt(canvas, sprite.art,
-                    {radius, timeSeconds * kMobWalkRadiansPerSecond, sprite.color});
+                    {radius, timeSeconds * kMobWalkRadiansPerSecond, sprite.color, gaze});
         canvas.restore();
         return;
     }
@@ -517,9 +517,14 @@ void SpriteCache::draw(Canvas& canvas, const Sprite& sprite, double x, double y,
 
 void SpriteCache::drawMob(Canvas& canvas, std::uint16_t index, double x, double y, double diameter,
                           double rotation, double timeSeconds, bool mirrored,
-                          double worldRadius) const {
+                          double worldRadius, Vec2 gaze) const {
     if (index >= mobs_.size()) return;
-    draw(canvas, mobs_[index], x, y, diameter, rotation, timeSeconds, mirrored, worldRadius);
+    draw(canvas, mobs_[index], x, y, diameter, rotation, timeSeconds, mirrored, worldRadius,
+         gaze);
+}
+
+MobArt SpriteCache::mobArt(std::uint16_t index) const {
+    return index < mobs_.size() ? mobs_[index].art : MobArt::None;
 }
 
 bool SpriteCache::petalAnimated(std::uint16_t index) const {

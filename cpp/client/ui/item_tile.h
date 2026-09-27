@@ -16,6 +16,7 @@
 // and scaled by `side / 60`, which is what lets one call serve a 34px crafting
 // ring slot and a 70px inventory cell without either being a different design.
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 
@@ -127,6 +128,11 @@ struct ItemTile {
     std::string nameOverride;
     /// Top-right, over the icon. gardn has no badge; the inventory needs one.
     std::string badge;
+    /// Centre the badge on a point just inside the tile's corner instead of
+    /// ending it there. For a label longer than a count -- the oracle's
+    /// "owned/price" -- which the reference lets hang past the tile's edge
+    /// rather than crowding it back over the icon.
+    bool badgeCentred = false;
 
     /// A live number printed along the tile's TOP edge, just inside the
     /// border, mirroring the name along the bottom -- what a sponge is still
@@ -148,6 +154,12 @@ struct ItemTile {
     bool hovered = false;
     bool selected = false;
     bool disabled = false;  ///< greyed out; the caller also blocks the click
+    /// The plate and rim drawn in flat grey rather than the rarity's colours;
+    /// the petal, its name and the badge are drawn exactly as they would be.
+    /// What the oracle shows a stack it cannot yet pay for: the tile still
+    /// says what it is and how many, it just does not glow like something
+    /// ready to use. Unlike `disabled`, which dims the whole tile.
+    bool greyed = false;
 
     /// The ground drop's backdrop: a larger, softer square under the plate,
     /// which is what lifts a drop off the terrain.
@@ -160,5 +172,43 @@ struct ItemTile {
 /// Draws `tile` centred in `rect`, scaled from the 60x60 design cell to the
 /// shorter of the rect's sides.
 void drawItemTile(Canvas&, const SpriteCache&, Rect rect, const ItemTile& tile);
+
+// ---------------------------------------------------------------------------
+// How a drop moves
+// ---------------------------------------------------------------------------
+//
+// Loot lying on the ground is never still: it breathes, it lands with a
+// flourish, and it throws a burst of its own rarity's grains when it arrives.
+// The world plays all three on the ground; the oracle's slot plays the same
+// three -- a guaranteed upgrade arrives the way loot does, not the way a menu
+// updates -- so the numbers live here, with the tile they animate, rather than
+// in either one of them.
+
+/// The breath: 1 +- 3% off a sine at 10 rad/s, one phase for every drop.
+inline constexpr double kDropPulseRate = 10.0;
+inline constexpr double kDropPulseAmount = 0.03;
+
+/// A drop's scale at `timeSeconds`, at `amount` of breath (the ground's own by
+/// default).
+inline double dropPulse(double timeSeconds, double amount = kDropPulseAmount) {
+    return 1.0 + std::sin(timeSeconds * kDropPulseRate) * amount;
+}
+
+/// The landing: it slides in from 30-50 units off, unwinding a spin of up to
+/// half a turn, easing out over 400 ms.
+inline constexpr double kDropLandSeconds = 0.4;
+inline constexpr double kDropLandNear = 30.0;
+inline constexpr double kDropLandSpread = 20.0;
+
+/// The burst it throws as it lands. Speeds are per 60 Hz frame, lives in
+/// milliseconds, sizes in the units the drop is drawn in -- the browser build's
+/// own figures, which is the form the world renderer states them in.
+inline constexpr int kDropBurstCount = 7;
+inline constexpr double kDropBurstSpeed = 3.0;
+inline constexpr double kDropBurstSpeedSpread = 3.0;
+inline constexpr double kDropBurstLifeMs = 500.0;
+inline constexpr double kDropBurstLifeSpreadMs = 250.0;
+inline constexpr double kDropBurstSize = 7.5;
+inline constexpr double kDropBurstSizeSpread = 15.0;
 
 } // namespace flix::ui

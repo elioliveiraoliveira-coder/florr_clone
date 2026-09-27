@@ -476,6 +476,26 @@ void App::drawSquadHud(Canvas& canvas, double time) {
     }
 }
 
+NpcService App::nearbyNpcService(Vec2 self) const {
+    // Measured from the flower the player SEES against the NPC's skin, which
+    // is what they walked up to. The server measures the body it simulates
+    // and allows kNpcServiceSlack on top, so a panel opened here is never
+    // refused for the frame of easing between the two.
+    NpcService nearest = NpcService::None;
+    double nearestGap = kNpcServiceReach;
+    for (const auto& entry : net_.view().entities()) {
+        const RemoteEntity& entity = entry.second;
+        if (entity.kind != net::EntityKind::Npc) continue;
+        const NpcService service = content().mob(entity.typeIndex).npc.service;
+        if (service == NpcService::None) continue;
+        const double gap = distance(self, entity.position) - entity.radius;
+        if (gap > nearestGap) continue;
+        nearest = service;
+        nearestGap = gap;
+    }
+    return nearest;
+}
+
 void App::drawBossBars(Canvas& canvas, bool altHeld) {
     // Super, unique and apex only. An ultra is a big mob, not a boss: it wears
     // the ordinary bar under its body, which is also where its name is.
