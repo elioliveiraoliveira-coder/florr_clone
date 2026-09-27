@@ -1061,6 +1061,11 @@ private:
     /// which is what a tile riding the cursor is sized against.
     double loadoutSlotSide_ = 0;
     double loadoutScale_ = 0;
+    /// The scratch surface the in-game bar is painted into before it goes
+    /// onto the frame as one see-through layer, in device pixels. It only
+    /// ever grows; each frame uses the top-left corner its box needs. See
+    /// drawLoadoutBar.
+    std::unique_ptr<Canvas> loadoutLayer_;
 
     /// What the bar draws while the server catches up.
     ///

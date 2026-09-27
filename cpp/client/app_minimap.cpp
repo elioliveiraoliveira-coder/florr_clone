@@ -145,7 +145,7 @@ const Canvas* App::minimapStatic(bool rarityGlow) {
         const double mapTop = fit.offsetY;
         const double mapWidth = extent.x * fit.scale;
         const double mapHeight = extent.y * fit.scale;
-        setFill(map, kPaper, 0.9);
+        setFill(map, kPaper, kOverlayPlateAlpha);
         map.fillRect(static_cast<float>(mapLeft), static_cast<float>(mapTop),
                      static_cast<float>(mapWidth), static_cast<float>(mapHeight));
         setFill(map, 0x000000u);
@@ -494,7 +494,7 @@ const Canvas* App::mazeMinimapStatic() {
     const double s = kMinimapSize / dim;   // design units per maze cell
 
     // Dark backdrop: the walls.
-    setFill(map, 0x141419u, 0.9);
+    setFill(map, 0x141419u, kOverlayPlateAlpha);
     map.fillRect(0, 0, static_cast<float>(kMinimapSize), static_cast<float>(kMinimapSize));
 
     // Walkable shapes in white, corner cells with the same fillet geometry

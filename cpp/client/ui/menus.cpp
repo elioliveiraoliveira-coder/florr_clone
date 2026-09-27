@@ -231,6 +231,10 @@ constexpr double kTitleLoadoutDrop = 50.0;
 /// classic metrics, below its bottom edge with the modern ones.
 constexpr double kLoadoutCapAbove = 15.0;
 constexpr double kLoadoutCapBelow = 13.0;
+/// How far a key cap's ink, outline and all, can reach from the point it is
+/// drawn at -- which the in-game bar's layer has to take in.
+constexpr double kLoadoutCapReachX = 24.0;
+constexpr double kLoadoutCapReachY = 14.0;
 
 /// The captions for the primary row. Bracketed, as gardn draws them, and
 /// ending on [0] because the tenth slot is the zero key.
@@ -388,6 +392,70 @@ void drawKeyLabel(Canvas& canvas, const std::string& label, double x, double y, 
     canvas.setGlobalAlpha(0.85f);
     text(canvas, label, x, y, style);
     canvas.setGlobalAlpha(1.0f);
+}
+
+/// A whole-pixel box on a canvas's backing store.
+struct LayerBox {
+    int x = 0;
+    int y = 0;
+    int w = 0;
+    int h = 0;
+};
+
+/// Readies `layer` to take everything `frame` would have painted inside
+/// `extent` (in `frame`'s current user units), so that endLayer can lay it
+/// down as ONE see-through picture. The layer draws in the very units the
+/// frame does: its transform is the frame's less a WHOLE-pixel offset, so
+/// every edge, glyph and cached sprite lands on the subpixel it would have
+/// landed on the frame, and the blit back is a one-to-one copy. False when the
+/// box is off the frame altogether.
+bool beginLayer(Canvas& frame, std::unique_ptr<Canvas>& layer, Rect extent, LayerBox& box) {
+    const std::array<float, 6> m = frame.currentTransform();
+    const std::array<Vec2, 4> corners = {Vec2{extent.x, extent.y}, Vec2{extent.right(), extent.y},
+                                         Vec2{extent.x, extent.bottom()},
+                                         Vec2{extent.right(), extent.bottom()}};
+    double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    for (std::size_t i = 0; i < corners.size(); ++i) {
+        const double dx = m[0] * corners[i].x + m[2] * corners[i].y + m[4];
+        const double dy = m[1] * corners[i].x + m[3] * corners[i].y + m[5];
+        x0 = i == 0 ? dx : std::min(x0, dx);
+        x1 = i == 0 ? dx : std::max(x1, dx);
+        y0 = i == 0 ? dy : std::min(y0, dy);
+        y1 = i == 0 ? dy : std::max(y1, dy);
+    }
+    const int left = std::max(0, static_cast<int>(std::floor(x0)));
+    const int top = std::max(0, static_cast<int>(std::floor(y0)));
+    const int right = std::min(frame.pixelWidth(), static_cast<int>(std::ceil(x1)));
+    const int bottom = std::min(frame.pixelHeight(), static_cast<int>(std::ceil(y1)));
+    if (right <= left || bottom <= top) return false;
+    box = {left, top, right - left, bottom - top};
+
+    // The surface only ever grows, in steps of 64 as the glitch buffer does,
+    // so a box that widens by a pixel -- a tile rocking, a window being
+    // dragged wider -- does not reallocate it on every frame of the change.
+    if (!layer || layer->pixelWidth() < box.w || layer->pixelHeight() < box.h) {
+        const int w = (std::max(box.w, layer ? layer->pixelWidth() : 0) + 63) / 64 * 64;
+        const int h = (std::max(box.h, layer ? layer->pixelHeight() : 0) + 63) / 64 * 64;
+        layer = std::make_unique<Canvas>(Canvas::createVirtual(w, h));
+    }
+    layer->clearRect(0, 0, static_cast<float>(box.w), static_cast<float>(box.h));
+    layer->save();
+    layer->setTransform(m[0], m[1], m[2], m[3], m[4] - static_cast<float>(left),
+                        m[5] - static_cast<float>(top));
+    return true;
+}
+
+/// Lays what beginLayer readied onto the frame at `alpha`, pixel for pixel.
+void endLayer(Canvas& frame, Canvas& layer, const LayerBox& box, double alpha) {
+    layer.restore();
+    const auto w = static_cast<float>(box.w);
+    const auto h = static_cast<float>(box.h);
+    frame.save();
+    frame.resetTransform();
+    frame.setGlobalAlpha(static_cast<float>(alpha));
+    frame.drawCanvas(layer, 0, 0, w, h, static_cast<float>(box.x), static_cast<float>(box.y), w,
+                     h);
+    frame.restore();
 }
 
 /// Advances the secondary selection to the next non-empty slot in `step`'s
@@ -1343,45 +1411,6 @@ void MenuSystem::drawLoadoutBar(Canvas& canvas, Window& window, NetClient& net,
     canvas.save();
     canvas.translate(0.0f, static_cast<float>((1.0 - loadoutSlide_) * 120.0));
 
-    // The modern bar has no trash: a petal is thrown away by dragging it off
-    // the bar, which is what a drop anywhere but a slot already does.
-    if (metrics.secondaryPicker) {
-        drawLoadoutSlot(canvas, layout.trash, kLoadoutTrashFill, hovered == kLoadoutTrashSlot);
-        drawKeyLabel(canvas, "[T]", layout.trash.right() + 16.0,
-                     layout.trash.y + layout.trash.h * 0.5, Align::Left);
-        if (drag_.active()) {
-            TextStyle del;
-            del.size = std::round(layout.trash.h / 4.0);
-            del.bold = true;
-            del.fill = kPaper;
-            del.stroke = kInk;
-            del.strokeWidth = 3.0;
-            del.align = Align::Centre;
-            del.baseline = Baseline::Middle;
-            text(canvas, "Delete", layout.trash.x + layout.trash.w * 0.5,
-                 layout.trash.y + layout.trash.h * 0.5, del);
-        }
-    }
-
-    for (int i = 0; i < kLoadoutBarSlots; ++i) {
-        const Rect slot = layout.slots[static_cast<std::size_t>(i)];
-        const bool selected = i >= kLoadoutBarPrimary &&
-                              i - kLoadoutBarPrimary == selectedSecondary_;
-        drawLoadoutSlot(canvas, slot, kLoadoutSlotFill, hovered == i || selected);
-        // The bracketed captions name the primary slots only -- the second
-        // row is reached with Q/E, not with a key of its own -- but they are
-        // drawn along whichever row the metrics put them on.
-        if (i < kLoadoutBarPrimary) {
-            const Rect under = metrics.capsBelow
-                ? layout.slots[static_cast<std::size_t>(kLoadoutBarPrimary + i)]
-                : slot;
-            const double capY = metrics.capsBelow ? under.bottom() + kLoadoutCapBelow
-                                                  : under.y - kLoadoutCapAbove;
-            drawKeyLabel(canvas, kLoadoutKeyCaps[i], under.x + under.w * 0.5, capY,
-                         Align::Centre);
-        }
-    }
-
     // --- the tiles ---------------------------------------------------------
     //
     // gardn's UiLoadoutPetal, ported. Each tile keeps its own box and eases
@@ -1496,10 +1525,102 @@ void MenuSystem::drawLoadoutBar(Canvas& canvas, Window& window, NetClient& net,
         }
     }
     // The one in hand goes down last, over every slot it might be crossing.
-    if (onTop >= 0) order[queued++] = {onTop, dropTarget < 0 || dropTarget == onTop};
+    const TileDraw inHand{onTop, dropTarget < 0 || dropTarget == onTop};
 
-    for (std::size_t drawn = 0; drawn < queued; ++drawn) {
-        const TileDraw& entry = order[drawn];
+    // Where each primary slot's caption is centred. The captions name the
+    // primary slots only -- the second row is reached with Q/E, not with a key
+    // of its own -- but they sit along whichever row the metrics put them on.
+    const auto captionAt = [&](int i) {
+        const Rect under =
+            layout.slots[static_cast<std::size_t>(metrics.capsBelow ? kLoadoutBarPrimary + i : i)];
+        return Vec2{under.x + under.w * 0.5,
+                    metrics.capsBelow ? under.bottom() + kLoadoutCapBelow
+                                      : under.y - kLoadoutCapAbove};
+    };
+    const Vec2 trashCaption{layout.trash.right() + 16.0, layout.trash.y + layout.trash.h * 0.5};
+
+    // In game the bar goes onto the frame as ONE see-through layer, at the
+    // minimap's alpha. A global alpha on each call cannot do that: the bar is
+    // stacked four deep -- a slot's plate and fill, a tile's plate and face,
+    // then the petal -- and every level at 0.9 over the one below leaves a
+    // face 99% opaque with only its rims showing the world. So the bar is
+    // painted whole into a scratch surface, and that goes down once.
+    //
+    // The petal in hand stays out of it and is painted opaque over the top: it
+    // is on the cursor rather than on the bar, and it can be anywhere on the
+    // screen, all of which the layer would then have to cover.
+    Canvas* layer = nullptr;
+    LayerBox layerBox;
+    if (inGame_) {
+        Rect extent{};
+        const auto take = [&extent](Rect r) {
+            if (!(extent.w > 0)) {
+                extent = r;
+                return;
+            }
+            const double right = std::max(extent.right(), r.right());
+            const double bottom = std::max(extent.bottom(), r.bottom());
+            extent.x = std::min(extent.x, r.x);
+            extent.y = std::min(extent.y, r.y);
+            extent.w = right - extent.x;
+            extent.h = bottom - extent.y;
+        };
+        for (const Rect& slot : layout.slots) take(slot);
+        for (int i = 0; i < kLoadoutBarPrimary; ++i) {
+            const Vec2 at = captionAt(i);
+            take({at.x - kLoadoutCapReachX, at.y - kLoadoutCapReachY, kLoadoutCapReachX * 2,
+                  kLoadoutCapReachY * 2});
+        }
+        if (metrics.secondaryPicker) {
+            take(layout.trash);
+            take({trashCaption.x, trashCaption.y - kLoadoutCapReachY, kLoadoutCapReachX * 2,
+                  kLoadoutCapReachY * 2});
+        }
+        // A tile reaches past its own box when it rocks, and its counter pill
+        // stands proud of its top edge: 0.65 of its side from the centre
+        // covers both with room to spare.
+        for (std::size_t drawn = 0; drawn < queued; ++drawn) {
+            const LoadoutTileAnim& anim = loadoutTiles_[static_cast<std::size_t>(order[drawn].slot)];
+            const double reach = std::max(anim.w, anim.h) * 0.65;
+            take({anim.cx - reach, anim.cy - reach, reach * 2, reach * 2});
+        }
+        // And a unit all round for the antialiased edges.
+        extent = {extent.x - 1.0, extent.y - 1.0, extent.w + 2.0, extent.h + 2.0};
+        if (beginLayer(canvas, loadoutLayer_, extent, layerBox)) layer = loadoutLayer_.get();
+    }
+    Canvas& bar = layer != nullptr ? *layer : canvas;
+
+    // The modern bar has no trash: a petal is thrown away by dragging it off
+    // the bar, which is what a drop anywhere but a slot already does.
+    if (metrics.secondaryPicker) {
+        drawLoadoutSlot(bar, layout.trash, kLoadoutTrashFill, hovered == kLoadoutTrashSlot);
+        drawKeyLabel(bar, "[T]", trashCaption.x, trashCaption.y, Align::Left);
+        if (drag_.active()) {
+            TextStyle del;
+            del.size = std::round(layout.trash.h / 4.0);
+            del.bold = true;
+            del.fill = kPaper;
+            del.stroke = kInk;
+            del.strokeWidth = 3.0;
+            del.align = Align::Centre;
+            del.baseline = Baseline::Middle;
+            text(bar, "Delete", layout.trash.x + layout.trash.w * 0.5,
+                 layout.trash.y + layout.trash.h * 0.5, del);
+        }
+    }
+
+    for (int i = 0; i < kLoadoutBarSlots; ++i) {
+        const Rect slot = layout.slots[static_cast<std::size_t>(i)];
+        const bool selected = i >= kLoadoutBarPrimary &&
+                              i - kLoadoutBarPrimary == selectedSecondary_;
+        drawLoadoutSlot(bar, slot, kLoadoutSlotFill, hovered == i || selected);
+        if (i < kLoadoutBarPrimary) {
+            const Vec2 at = captionAt(i);
+            drawKeyLabel(bar, kLoadoutKeyCaps[i], at.x, at.y, Align::Centre);
+        }
+    }
+
+    const auto drawTile = [&](Canvas& target, const TileDraw& entry) {
         const auto at = static_cast<std::size_t>(entry.slot);
         const LoadoutTileAnim& anim = loadoutTiles_[at];
         ItemTile tile;
@@ -1511,15 +1632,19 @@ void MenuSystem::drawLoadoutBar(Canvas& canvas, Window& window, NetClient& net,
         tile.counter = slotCounterLabel(net, entry.slot);
         const Rect box{anim.cx - anim.w * 0.5, anim.cy - anim.h * 0.5, anim.w, anim.h};
         if (!entry.rock) {
-            drawItemTile(canvas, sprites, box, tile);
-            continue;
+            drawItemTile(target, sprites, box, tile);
+            return;
         }
-        canvas.save();
-        canvas.translate(static_cast<float>(anim.cx), static_cast<float>(anim.cy));
-        canvas.rotate(static_cast<float>(wobble));
-        drawItemTile(canvas, sprites, {-anim.w * 0.5, -anim.h * 0.5, anim.w, anim.h}, tile);
-        canvas.restore();
-    }
+        target.save();
+        target.translate(static_cast<float>(anim.cx), static_cast<float>(anim.cy));
+        target.rotate(static_cast<float>(wobble));
+        drawItemTile(target, sprites, {-anim.w * 0.5, -anim.h * 0.5, anim.w, anim.h}, tile);
+        target.restore();
+    };
+    for (std::size_t drawn = 0; drawn < queued; ++drawn) drawTile(bar, order[drawn]);
+
+    if (layer != nullptr) endLayer(canvas, *layer, layerBox, kOverlayPlateAlpha);
+    if (onTop >= 0) drawTile(canvas, inHand);
     canvas.restore();
 }
 

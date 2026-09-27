@@ -257,6 +257,10 @@ public:
 
     bool connect(const std::string& host, std::uint16_t port);
     void disconnect();
+    /// Dials the server connect() was last pointed at, again. The handshake
+    /// that follows counts as a reconnection, so the app resumes the session
+    /// token this client is still holding.
+    void redial();
 
     /// True while a dropped socket is waiting to be redialled.
     ///
@@ -555,6 +559,13 @@ public:
     /// is on and empty the token file, which are its business, not this one's.
     bool signedOutElsewhere = false;
 
+    /// Set once each time the server signed this client out because the same
+    /// account signed in on another connection -- another tab, another device.
+    /// The socket is already down and deliberately NOT being redialled; the
+    /// account's token is kept, because it is still good and redial() is how
+    /// the player takes the account back. The reason is in lastError().
+    bool sessionReplaced = false;
+
     /// Set when the server reports the player died; cleared by respawning, or
     /// by a yggdrasil raising this body back up.
     bool dead() const { return dead_; }
@@ -619,6 +630,7 @@ private:
     void handlePong(ByteReader&);
     void handleDebugStats(ByteReader&);
     void handleKick(ByteReader&);
+    void handleSessionReplaced(ByteReader&);
     void handleDailyStreak(ByteReader&);
     void handleSkinCatalog(ByteReader&);
     void handleSkinPublished(ByteReader&);

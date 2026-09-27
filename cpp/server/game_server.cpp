@@ -1035,6 +1035,7 @@ void GameServer::handleLogin(Session& session, net::Connection& connection, Byte
     // A player who signed in is not what the limit is for.
     accountLimits_.refundLoginAttempt(address);
 
+    replaceOtherSessions(session, account->id);
     session.userId = account->id;
     session.username = account->username;
     session.admin = account->admin;
@@ -1057,12 +1058,17 @@ void GameServer::handleResume(Session& session, net::Connection& connection, Byt
         return;
     }
 
-    session.userId = record->userId;
-    session.username = record->username;
+    // Copied out before the other sessions are signed out: that saves their
+    // bodies into the database, and `record` points into it.
+    const std::string userId = record->userId;
+    const std::string username = record->username;
+    replaceOtherSessions(session, userId);
+    session.userId = userId;
+    session.username = username;
     session.token = token;
     session.stage = SessionStage::Authenticated;
-    if (const Account* account = database_.findUser(record->username)) session.admin = account->admin;
-    sendAuthResult(connection, net::AuthStatus::Ok, token, record->username, "");
+    if (const Account* account = database_.findUser(username)) session.admin = account->admin;
+    sendAuthResult(connection, net::AuthStatus::Ok, token, username, "");
     sendDailyStreak(session, connection);
     sendProfile(session, connection);
     sendSkinCatalog(session, connection);
@@ -1180,6 +1186,48 @@ void GameServer::handleLogout(Session& session) {
     // Same reason as a password change: a revocation still waiting for the
     // thirty-second persist is undone by a crash inside that window.
     database_.maybeSave(monotonicMillis());
+}
+
+void GameServer::replaceOtherSessions(const Session& incoming, const std::string& userId) {
+    // Two live connections on one account are two bodies playing one record:
+    // each carries its own XP and stars and the later save wins, and one
+    // person farming with several flowers at once is the multiboxing this
+    // rule exists to stop. The NEWER sign-in wins, rather than the first
+    // being defended: the player at the new tab is the one at the keyboard,
+    // and a crashed tab whose socket has not timed out yet must not lock its
+    // own owner out.
+    //
+    // No exemption for loopback. The browser server spared a pair of local
+    // tabs, but everything nginx proxies arrives from loopback too, and the
+    // peer this transport records carries no forwarding header to tell the
+    // two apart -- an exemption here would switch the rule off in production.
+    for (auto& [id, other] : sessions_) {
+        if (id == incoming.connection || !other.authenticated() || other.userId != userId) continue;
+        net::Connection* connection = listener_.find(id);
+        std::printf("[SESSION] %s signed in on connection %u; closing connection %u\n",
+                    other.username.c_str(), static_cast<unsigned>(incoming.connection),
+                    static_cast<unsigned>(id));
+
+        // What a disconnect does, and while the session still has a name: the
+        // squad is told who left, and the body is saved into the record BEFORE
+        // the incoming connection reads it back, so it starts from where this
+        // one stopped rather than from the last periodic save.
+        departSquad(other, nullptr, squadDisplayName(squadIdOf(other)));
+        // Anonymous from here on, so the close that follows has no account left
+        // to persist into -- a late save from this side would overwrite
+        // whatever the new session does in the meantime.
+        signOut(other);
+
+        if (connection) {
+            ByteWriter w;
+            w.u8(static_cast<std::uint8_t>(net::ServerMessage::SessionReplaced));
+            w.str("You logged in from another tab or device.");
+            connection->send(w);
+            // Gracefully: the reason has to reach the client before the socket
+            // goes, or all it sees is a drop -- which it would redial.
+            connection->closeGracefully();
+        }
+    }
 }
 
 void GameServer::signOut(Session& session) {

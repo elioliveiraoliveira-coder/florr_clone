@@ -39,6 +39,10 @@ inline constexpr std::uint32_t kBossTrack  = 0x1C1C1Cu;
 /// reference's HUD is slightly see-through: its plate over a 140 floor reads
 /// 19 and over a 185 one reads 25, and the slope between them is this.
 inline constexpr double kHudLayerAlpha = 0.865;
+/// The in-game furniture that stands on a plate of its own over the world --
+/// the minimap's backdrop and the loadout bar -- is this opaque, so the world
+/// under the corner and the bottom edge still shows faintly through.
+inline constexpr double kOverlayPlateAlpha = 0.9;
 inline constexpr std::uint32_t kShade      = 0x000000u;  ///< modal scrim, at low alpha
 /// The green the browser build's auth form and chat field are made of.
 inline constexpr std::uint32_t kField      = 0x18CE18u;

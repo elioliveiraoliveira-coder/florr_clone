@@ -1631,6 +1631,27 @@ void Canvas::blitRegion(const Canvas&s,float sx,float sy,float sw,float sh,float
   int cx0,cy0,cx1,cy1; drawBounds(cx0,cy0,cx1,cy1);
   const int bx0=std::max(cx0,static_cast<int>(std::floor(dx0))), bx1=std::min(cx1,static_cast<int>(std::ceil(dx1)));
   const int by0=std::max(cy0,static_cast<int>(std::floor(dy0))), by1=std::min(cy1,static_cast<int>(std::ceil(dy1)));
+  // One texel to one pixel on whole-pixel edges -- a scratch layer laid back
+  // exactly where it was painted from. The walk below would pick the very
+  // same texel for every pixel ((x+0.5-dx0)*sw/sw truncates to x-dx0), but
+  // pays a divide, four clamps and a bounds test per pixel to find it, which
+  // made compositing a HUD-sized layer cost three times painting it.
+  if (!tint && dx1-dx0==sw && dy1-dy0==sh && dx0==std::floor(dx0) && dy0==std::floor(dy0) &&
+      sx==std::floor(sx) && sy==std::floor(sy) && sx>=0 && sy>=0 &&
+      sx+sw<=static_cast<float>(s.width_) && sy+sh<=static_cast<float>(s.height_)) {
+    const int offX=static_cast<int>(sx)-static_cast<int>(dx0), offY=static_cast<int>(sy)-static_cast<int>(dy0);
+    const bool clipped=state_.clip!=nullptr;
+    const float alpha=state_.alpha;
+    for (int y=by0;y<by1;++y) {
+      const Color* src=s.pixels_.data()+static_cast<size_t>(y+offY)*s.width_+(bx0+offX);
+      Color* dst=pixels_.data()+static_cast<size_t>(y)*width_+bx0;
+      for (int x=bx0;x<bx1;++x,++src,++dst) {
+        if (src->a==0) continue;
+        blend(*dst,*src,clipped ? alpha*clipAt(x,y) : alpha);
+      }
+    }
+    return;
+  }
   for (int y=by0;y<by1;++y) for (int x=bx0;x<bx1;++x) {
     const int ox=std::clamp(static_cast<int>((x+0.5f-dx0)*sw/std::max(1e-3f,dx1-dx0)),0,static_cast<int>(sw)-1);
     const int oy=std::clamp(static_cast<int>((y+0.5f-dy0)*sh/std::max(1e-3f,dy1-dy0)),0,static_cast<int>(sh)-1);

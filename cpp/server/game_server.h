@@ -208,6 +208,11 @@ private:
     /// temporary admin dropped, and nothing left that names the account.
     /// Touches no token -- revoking those is the caller's decision.
     void signOut(Session&);
+    /// One account, one live session: signs out and closes every OTHER
+    /// connection already holding `userId`, telling each one why. Called by a
+    /// login or a resume once the credential has checked out, and before the
+    /// account is read back for the incoming connection.
+    void replaceOtherSessions(const Session& incoming, const std::string& userId);
     void handleJoin(Session&, net::Connection&, ByteReader&);
     void handleLeave(Session&, net::Connection&);
     void handleInput(Session&, ByteReader&);

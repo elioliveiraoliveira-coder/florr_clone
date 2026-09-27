@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <string>
@@ -751,13 +752,16 @@ TEST(logging_out_ends_every_session_the_account_has) {
     Harness h("logout-all");
     if (!h.ready) { CHECK(false); return; }
 
-    // Three sessions on one account: the one that logs out, one playing on
-    // another connection, and a token no connection is holding right now --
-    // the copy left behind on some other machine.
-    NetClient here;
-    CHECK(connectClient(h, here));
-    here.requestRegister("heidi", "password8");
-    CHECK(h.stepUntil({&here}, [&] { return here.status() == NetClient::Status::LoggedIn; }));
+    // Three tokens on one account: two left behind by earlier sign-ins -- one
+    // on a connection since closed, the copy left on some other machine, and
+    // one on a connection a later sign-in replaced -- and the live one that
+    // logs out. Only the last is signed in: one account, one session.
+    NetClient parked;
+    CHECK(connectClient(h, parked));
+    parked.requestRegister("heidi", "password8");
+    CHECK(h.stepUntil({&parked}, [&] { return parked.status() == NetClient::Status::LoggedIn; }));
+    const std::string parkedToken = parked.sessionToken();
+    parked.disconnect();
 
     NetClient there;
     CHECK(connectClient(h, there));
@@ -765,14 +769,14 @@ TEST(logging_out_ends_every_session_the_account_has) {
     CHECK(h.stepUntil({&there}, [&] { return there.status() == NetClient::Status::LoggedIn; }));
     const std::string thereToken = there.sessionToken();
     there.joinGame(1280, 720);
-    CHECK(h.stepUntil({&here, &there}, [&] { return there.view().self().netId != 0; }));
+    CHECK(h.stepUntil({&there}, [&] { return there.view().self().netId != 0; }));
 
-    NetClient parked;
-    CHECK(connectClient(h, parked));
-    parked.requestLogin("heidi", "password8");
-    CHECK(h.stepUntil({&parked}, [&] { return parked.status() == NetClient::Status::LoggedIn; }));
-    const std::string parkedToken = parked.sessionToken();
-    parked.disconnect();
+    NetClient here;
+    CHECK(connectClient(h, here));
+    here.requestLogin("heidi", "password8");
+    CHECK(h.stepUntil({&here, &there}, [&] {
+        return here.status() == NetClient::Status::LoggedIn && there.sessionReplaced;
+    }));
 
     // A different account, which a logout of this one must not touch.
     NetClient bystander;
@@ -782,30 +786,15 @@ TEST(logging_out_ends_every_session_the_account_has) {
                       [&] { return bystander.status() == NetClient::Status::LoggedIn; }));
 
     here.logout();
-    h.step(10, {&here, &there, &bystander});
-
-    // The playing connection is signed out, not merely left holding a dead
-    // token: it forgot the account, its body is gone from the server, and it
-    // was told why.
-    CHECK(there.signedOutElsewhere);
-    CHECK(there.status() == NetClient::Status::Ready);
-    CHECK_EQ(static_cast<int>(there.authStatus), static_cast<int>(net::AuthStatus::SessionExpired));
-    CHECK(!there.authMessage.empty());
-    CHECK(there.sessionToken().empty());
-    CHECK(there.profile().username.empty());
-    CHECK_EQ(playersVisibleTo(there), std::size_t(0));
-    CHECK_EQ(h.server.playerCount(), std::size_t(0));
-
-    // And the server treats it as anonymous, not just the client: a join from
-    // it is refused like any other join from a socket nobody signed into.
-    there.joinGame(1280, 720);
-    h.step(10, {&there});
-    CHECK_EQ(h.server.playerCount(), std::size_t(0));
+    h.step(10, {&here, &bystander});
 
     // The one that logged out was not "signed out elsewhere" -- it did this.
     CHECK(!here.signedOutElsewhere);
+    CHECK(here.status() == NetClient::Status::Ready);
+    CHECK_EQ(h.server.playerCount(), std::size_t(0));
 
-    // Every token the account had is dead, including the one nobody was using.
+    // Every token the account had is dead, including the ones nobody was
+    // using -- the replaced tab's among them, so it cannot play here again.
     for (const std::string& token : {thereToken, parkedToken}) {
         NetClient stale;
         CHECK(connectClient(h, stale));
@@ -819,6 +808,78 @@ TEST(logging_out_ends_every_session_the_account_has) {
     CHECK(!bystander.signedOutElsewhere);
     CHECK(bystander.status() == NetClient::Status::LoggedIn);
     CHECK_EQ(bystander.profile().username, std::string("ivan"));
+}
+
+TEST(signing_in_elsewhere_replaces_the_session_and_the_first_tab_can_take_it_back) {
+    Harness h("replaced", {}, flix::testsupport::dataDir(), 0);
+    if (!h.ready) { CHECK(false); return; }
+
+    // The first tab, playing.
+    NetClient first;
+    CHECK(connectClient(h, first));
+    first.requestRegister("jules", "password7");
+    CHECK(h.stepUntil({&first}, [&] { return first.status() == NetClient::Status::LoggedIn; }));
+    first.joinGame(1280, 720);
+    CHECK(h.stepUntil({&first}, [&] { return first.view().self().netId != 0; }));
+    CHECK_EQ(h.server.playerCount(), std::size_t(1));
+
+    // Another account, which none of this may touch.
+    NetClient bystander;
+    CHECK(connectClient(h, bystander));
+    bystander.requestRegister("kim", "password8");
+    CHECK(h.stepUntil({&bystander},
+                      [&] { return bystander.status() == NetClient::Status::LoggedIn; }));
+
+    // The same account signs in on a second tab. That tab wins, and the first
+    // is told why rather than simply dropped.
+    NetClient second;
+    CHECK(connectClient(h, second));
+    second.requestLogin("jules", "password7");
+    CHECK(h.stepUntil({&first, &second, &bystander}, [&] {
+        return second.status() == NetClient::Status::LoggedIn && first.sessionReplaced;
+    }));
+    first.sessionReplaced = false;
+    CHECK(first.status() == NetClient::Status::Failed);
+    CHECK(!first.lastError().empty());
+    CHECK_EQ(playersVisibleTo(first), std::size_t(0));
+    // Its body left the world with it: no second flower on the account.
+    CHECK_EQ(h.server.playerCount(), std::size_t(0));
+    // It kept the token -- still good, and what "play on this tab" resumes.
+    CHECK(!first.sessionToken().empty());
+
+    // And it does NOT redial on its own. Waited out on the wall clock, past
+    // the first redial's delay: a redial would resume the token, replace the
+    // second tab, and the two would trade the account forever.
+    CHECK(!first.reconnecting());
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    while (std::chrono::steady_clock::now() < until) h.step(1, {&first, &second, &bystander});
+    CHECK(first.status() == NetClient::Status::Failed);
+    CHECK(!first.reconnected);
+    CHECK(!second.sessionReplaced);
+    CHECK(second.status() == NetClient::Status::LoggedIn);
+
+    second.joinGame(1280, 720);
+    CHECK(h.stepUntil({&second}, [&] { return second.view().self().netId != 0; }));
+    CHECK_EQ(h.server.playerCount(), std::size_t(1));
+
+    // "Play on this tab": a fresh socket, and the token presented on it --
+    // what App::onReconnected does when that handshake lands. Now the SECOND
+    // tab is the one replaced, and its body goes.
+    first.redial();
+    CHECK(h.stepUntil({&first, &second, &bystander}, [&] { return first.reconnected; }));
+    first.reconnected = false;
+    first.resumeSession(first.sessionToken());
+    CHECK(h.stepUntil({&first, &second, &bystander}, [&] {
+        return first.status() == NetClient::Status::LoggedIn && second.sessionReplaced;
+    }));
+    CHECK_EQ(first.profile().username, std::string("jules"));
+    CHECK(second.status() == NetClient::Status::Failed);
+    CHECK(!second.reconnecting());
+    CHECK_EQ(h.server.playerCount(), std::size_t(0));
+
+    // The other account never noticed any of it.
+    CHECK(!bystander.sessionReplaced);
+    CHECK(bystander.status() == NetClient::Status::LoggedIn);
 }
 
 TEST(a_hornets_missile_reaches_the_client_at_the_size_it_was_fired_at) {

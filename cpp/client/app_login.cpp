@@ -41,6 +41,29 @@ Rect centred(double width, double height, int viewW, int viewH, double yOffset =
     return {(viewW - width) * 0.5, (viewH - height) * 0.5 + yOffset, width, height};
 }
 
+/// The screen a tab lands on when its account signs in somewhere else: the
+/// title, why this tab stopped, and the one button that takes it back. One
+/// function for both passes, like authLayout, so the button is clicked where
+/// it is painted.
+struct ReplacedLayout {
+    double titleY = 0;
+    double reasonY = 0;
+    double hintY = 0;
+    Rect play;
+};
+
+ReplacedLayout replacedLayout(int viewW, int viewH) {
+    const double centreY = viewH * 0.5;
+    ReplacedLayout layout;
+    // The title where the connecting screen puts it, so a tab that was on the
+    // title screen when it was replaced does not see it jump.
+    layout.titleY = centreY - 200.0;
+    layout.reasonY = centreY - 40.0;
+    layout.hintY = centreY - 6.0;
+    layout.play = centred(240.0, 50.0, viewW, viewH, 50.0);
+    return layout;
+}
+
 /// Mirrors the canvas AuthForm's vertical rhythm in title_screen/auth_form.ts.
 /// Keeping the rectangles together prevents the interaction pass and the draw
 /// pass from drifting apart when this form changes again.
@@ -410,6 +433,60 @@ void App::drawConnectionState(Canvas& canvas, double time) {
     text(canvas, "Connecting...", canvas.width() * 0.5, canvas.height() * 0.5, style);
     if (statsVisible()) drawStatsCounters(canvas, true);
     (void)time;
+}
+
+void App::updateSessionReplaced() {
+    // A click, and only a click: ENTER would let a keystroke meant for
+    // something else take the account back from the tab now playing it.
+    if (!window_.mousePressed(MouseButton::Left)) return;
+    const ReplacedLayout layout = replacedLayout(window_.width(), window_.height());
+    if (!hit(layout.play, {window_.mouseX(), window_.mouseY()})) return;
+
+    // A fresh socket, and the handshake on it counts as a reconnection:
+    // onReconnected presents the token this client kept, and signing the
+    // account in HERE is exactly what closes it on the other tab. That tab
+    // then lands on this same screen, and the player can hand it back again.
+    net_.redial();
+    screen_ = Screen::Connecting;
+}
+
+void App::drawSessionReplaced(Canvas& canvas, double time) {
+    (void)time;   // static: the only thing that changes is the button's hover
+    const ReplacedLayout layout = replacedLayout(canvas.width(), canvas.height());
+    const double centreX = canvas.width() * 0.5;
+    const Vec2 mouse{window_.mouseX(), window_.mouseY()};
+    const bool over = pointerInWindow(window_) && hit(layout.play, mouse);
+
+    TextStyle title;
+    title.size = 48.0;
+    title.align = Align::Centre;
+    title.bold = true;
+    title.strokeWidth = 6.0;
+    text(canvas, "flowrix beta", centreX, layout.titleY, title);
+
+    // The server's words when it sent any, which it always does; the fallback
+    // is only what an empty string would otherwise leave blank.
+    TextStyle reason;
+    reason.size = 24.0;
+    reason.align = Align::Centre;
+    reason.bold = true;
+    reason.strokeWidth = 4.0;
+    text(canvas,
+         net_.lastError().empty() ? "You logged in from another tab or device."
+                                  : net_.lastError(),
+         centreX, layout.reasonY, reason);
+
+    TextStyle hint;
+    hint.size = 16.0;
+    hint.align = Align::Centre;
+    text(canvas, "Only one tab can play an account at a time.", centreX, layout.hintY, hint);
+
+    ButtonStyle play;
+    play.fill = kAccent;
+    play.textSize = 22.0;
+    play.textStrokeWidth = 22.0 * kTextStrokeRatio;
+    button(canvas, layout.play, "Play on this tab", over,
+           over && window_.mouseDown(MouseButton::Left), play);
 }
 
 void App::drawLogin(Canvas& canvas, double time) {

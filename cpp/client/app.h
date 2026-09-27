@@ -45,6 +45,9 @@ enum class Screen : std::uint8_t {
     Playing,
     Dead,         ///< the death card, over a frozen world
     Disconnected,
+    /// Signed out because the account signed in on another tab or device;
+    /// offers to take it back and play here instead.
+    Replaced,
 };
 
 struct AppConfig {
@@ -161,6 +164,7 @@ private:
     void updateLobby(double dt);
     void updatePlaying(double dt);
     void updateDead(double dt);
+    void updateSessionReplaced();
 
     void drawLogin(Canvas&, double time);
     void drawLobby(Canvas&, double time);
@@ -271,6 +275,7 @@ private:
     /// cannot drift apart.
     void drawChatField(Canvas&, Rect box, double time);
     void drawConnectionState(Canvas&, double time);
+    void drawSessionReplaced(Canvas&, double time);
     /// The red strip across the top of a live game whose socket has dropped.
     /// The world and the HUD keep drawing underneath, as the reference's do.
     void drawDisconnectBanner(Canvas&);
@@ -365,6 +370,11 @@ private:
     /// this is and onto a blank login form, with the token file emptied. Sends
     /// nothing -- NetClient has already dealt with the server and the account.
     void showLoggedOut();
+    /// The app's half of being replaced by a sign-in elsewhere: off whatever
+    /// screen this is and onto the one offering to play here instead. The
+    /// token is left alone, on disk and in NetClient -- it is still good, and
+    /// it is what playing here resumes with.
+    void showSessionReplaced();
 
     void loadSession();
     void saveSession() const;

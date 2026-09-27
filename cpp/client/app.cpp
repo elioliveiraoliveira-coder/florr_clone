@@ -326,11 +326,17 @@ void App::pollNetwork() {
         onReconnected();
     }
 
+    // The account signed in somewhere else. Before the drop test below: this
+    // socket is down too, but on purpose, and it is not coming back on its own.
+    if (net_.sessionReplaced) {
+        net_.sessionReplaced = false;
+        showSessionReplaced();
+    }
     // A drop mid-game does NOT take the game off the screen: the world, the
     // HUD and the panels keep drawing and a banner says what happened. Only a
     // failure before the player ever had a body replaces the screen.
     if (net_.status() == NetClient::Status::Failed && screen_ != Screen::Disconnected &&
-        screen_ != Screen::Playing && screen_ != Screen::Dead) {
+        screen_ != Screen::Replaced && screen_ != Screen::Playing && screen_ != Screen::Dead) {
         screen_ = Screen::Disconnected;
     }
     // The account was logged out from another connection. Before the auth
@@ -570,6 +576,7 @@ void App::frame(double dt) {
         case Screen::Playing:      updatePlaying(dt); break;
         case Screen::Dead:         updateDead(dt); break;
         case Screen::Disconnected: break;
+        case Screen::Replaced:     updateSessionReplaced(); break;
     }
 
     // One heartbeat a second while the socket is up, as the reference's own
@@ -710,6 +717,7 @@ void App::frame(double dt) {
             // Over the panels, as the reference's own always-on-top widget is.
             drawDailyStreak(canvas, timeSeconds_);
         }
+        else if (screen_ == Screen::Replaced) drawSessionReplaced(canvas, timeSeconds_);
         else drawConnectionState(canvas, timeSeconds_);
     }
 
@@ -1010,6 +1018,28 @@ void App::showLoggedOut() {
     // read as a stutter rather than a transition.
     if (inWorld) beginSceneWipe(false);
     screen_ = Screen::Login;
+}
+
+void App::showSessionReplaced() {
+    const bool inWorld = screen_ == Screen::Playing || screen_ == Screen::Dead;
+    if (inWorld) tutorial_.endGame();
+    menus_.close();
+
+    // Whatever was half-done on the old screen is over: nothing typed here is
+    // going anywhere, and the form a resume might land on opens blank.
+    deathCardVisible_ = false;
+    chatOpen_ = false;
+    chatDraft_.clear();
+    chatSuggestion_ = -1;
+    chatField_.blur();
+    nameField_.blur();
+    focusedField_ = -1;
+    pressedControl_.clear();
+    pendingAuth_.clear();
+    loginMessage_.clear();
+
+    if (inWorld) beginSceneWipe(false);
+    screen_ = Screen::Replaced;
 }
 
 // ---------------------------------------------------------------------------

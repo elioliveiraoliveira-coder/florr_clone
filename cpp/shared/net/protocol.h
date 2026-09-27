@@ -22,7 +22,7 @@ namespace flix::net {
 using ConnectionId = std::uint32_t;
 
 /// Bumped whenever any message layout in this file changes.
-inline constexpr std::uint16_t kProtocolVersion = 35;
+inline constexpr std::uint16_t kProtocolVersion = 36;
 
 /// "Not one of the rotating store's cards": a purchase at the full ladder
 /// price. Any other value is a slot index the server checks against the offers
@@ -224,6 +224,14 @@ enum class ServerMessage : std::uint8_t {
                         ///< forge and the oracle are two panels with two
                         ///< animations, and a result either one could consume
                         ///< would land in whichever happened to be open.
+    SessionReplaced,    ///< str reason. The account signed in on another
+                        ///< connection, so this one has been signed out and
+                        ///< is about to be closed: one account, one live
+                        ///< session. Not a Kick -- the client answers it with
+                        ///< a "play on this tab" offer rather than a bare
+                        ///< refusal, and must NOT redial on its own, or the
+                        ///< two tabs would take the account back from each
+                        ///< other forever. (Version 36.)
 };
 
 // ---------------------------------------------------------------------------

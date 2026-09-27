@@ -105,6 +105,7 @@ const char* serverMessageName(std::uint8_t id) {
         case net::ServerMessage::RealmChange:         return "realmChange";
         case net::ServerMessage::ChangePasswordResult: return "changePasswordResult";
         case net::ServerMessage::OracleResult:        return "oracleResult";
+        case net::ServerMessage::SessionReplaced:     return "sessionReplaced";
     }
     return "unknown";
 }
@@ -143,6 +144,14 @@ void NetClient::disconnect() {
     // after one. connect() re-arms by dialling.
     retryAtMillis_ = 0;
     retryDelayMillis_ = 0;
+}
+
+void NetClient::redial() {
+    if (host_.empty()) return;
+    // Copies: connect() assigns both members from its arguments.
+    const std::string host = host_;
+    const std::uint16_t port = port_;
+    connect(host, port);
 }
 
 void NetClient::armReconnect() {
@@ -590,6 +599,7 @@ void NetClient::onMessage(net::Connection&, ByteReader& reader) {
         case net::ServerMessage::RealmChange:   handleRealmChange(reader); break;
         case net::ServerMessage::ChangePasswordResult: handleChangePasswordResult(reader); break;
         case net::ServerMessage::OracleResult:  handleOracleResult(reader); break;
+        case net::ServerMessage::SessionReplaced: handleSessionReplaced(reader); break;
         default:
             // An unknown id means the server is newer than this build. The
             // frame is already fully buffered, so skipping it is safe and
@@ -1207,6 +1217,29 @@ void NetClient::handleKick(ByteReader& reader) {
     lastError_ = reason;
     status_ = Status::Failed;
     dialer_.disconnect();
+}
+
+void NetClient::handleSessionReplaced(ByteReader& reader) {
+    const std::string reason = reader.str();
+    if (!reader.ok()) return;
+    // The server has signed this connection out and is closing it. Hung up
+    // from this end first, and with no redial armed: a redial would resume the
+    // token, take the account straight back from the tab that just signed in,
+    // and the two would trade it between them forever. Only the player can
+    // decide which tab keeps it -- see redial().
+    dialer_.disconnect();
+    status_ = Status::Failed;
+    lastError_ = reason;
+    retryAtMillis_ = 0;
+    retryDelayMillis_ = 0;
+    // The world this connection was streamed is gone with it. The account is
+    // not forgotten: the token is what playing here again resumes with, and
+    // the fresh profile that resume brings replaces the rest.
+    view_.clear();
+    chatBubbles_.clear();
+    dead_ = false;
+    revived = false;
+    sessionReplaced = true;
 }
 
 void NetClient::handleDailyStreak(ByteReader& reader) {
