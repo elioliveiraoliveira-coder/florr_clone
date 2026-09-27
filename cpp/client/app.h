@@ -279,6 +279,9 @@ private:
     /// The red strip across the top of a live game whose socket has dropped.
     /// The world and the HUD keep drawing underneath, as the reference's do.
     void drawDisconnectBanner(Canvas&);
+    /// The socket is down and the screen is carrying on without it: dropped,
+    /// or being redialled. What puts the banner up.
+    bool connectionLost() const;
     /// Leaves the world for the title screen: what Continue, ENTER and the
     /// exit button all do.
     void leaveToTitle();

@@ -326,17 +326,32 @@ void App::pollNetwork() {
         onReconnected();
     }
 
+    // A first connection that failed and then landed on a redial. That
+    // handshake is not a RE-connection -- there was never a session to put
+    // back -- so onReconnected does not run, and nothing else would ever take
+    // the Disconnected screen down again. Back through Connecting, which
+    // resumes a stored token exactly as a first connection that worked does.
+    if (screen_ == Screen::Disconnected && net_.status() == NetClient::Status::Ready) {
+        screen_ = Screen::Connecting;
+    }
+
     // The account signed in somewhere else. Before the drop test below: this
     // socket is down too, but on purpose, and it is not coming back on its own.
     if (net_.sessionReplaced) {
         net_.sessionReplaced = false;
         showSessionReplaced();
     }
-    // A drop mid-game does NOT take the game off the screen: the world, the
-    // HUD and the panels keep drawing and a banner says what happened. Only a
-    // failure before the player ever had a body replaces the screen.
+    // A drop does NOT take the screen away while a redial is coming. In a
+    // game the world, the HUD and the panels keep drawing; on the title screen
+    // the form or the lobby does; and a banner over either says what happened
+    // -- a server restart is seconds of that, not a trip to a blank screen.
+    // Only a failure nothing is going to repair replaces what is showing: the
+    // first connection never landing, or a handshake the server refused.
+    const bool titleKeepsScreen = (screen_ == Screen::Login || screen_ == Screen::Lobby) &&
+                                  net_.reconnecting();
     if (net_.status() == NetClient::Status::Failed && screen_ != Screen::Disconnected &&
-        screen_ != Screen::Replaced && screen_ != Screen::Playing && screen_ != Screen::Dead) {
+        screen_ != Screen::Replaced && screen_ != Screen::Playing && screen_ != Screen::Dead &&
+        !titleKeepsScreen) {
         screen_ = Screen::Disconnected;
     }
     // The account was logged out from another connection. Before the auth
@@ -357,6 +372,11 @@ void App::pollNetwork() {
             focusedField_ = -1;
             saveSession();
             screen_ = Screen::Lobby;
+        } else if (screen_ == Screen::Lobby) {
+            // A reconnection's resume, refused -- the token was revoked while
+            // the socket was down. onReconnected put the lobby up on the
+            // strength of that token; without it this is the form's screen.
+            screen_ = Screen::Login;
         }
     }
     if (net_.sessionTokenRenewed) {
@@ -685,7 +705,7 @@ void App::frame(double dt) {
             // down after a yggdrasil has put the body on its feet.
             if (deathCardSlide_ > 0.01) drawDeathCard(canvas, timeSeconds_);
         });
-        if (net_.status() == NetClient::Status::Failed) drawDisconnectBanner(canvas);
+        if (connectionLost()) drawDisconnectBanner(canvas);
         // Ping and the rest live here and nowhere else: the reference has no
         // always-on latency readout, only this opt-in corner.
         if (statsVisible()) drawStatsCounters(canvas, false);
@@ -719,6 +739,11 @@ void App::frame(double dt) {
         }
         else if (screen_ == Screen::Replaced) drawSessionReplaced(canvas, timeSeconds_);
         else drawConnectionState(canvas, timeSeconds_);
+        // The strip a live game gets, over the form or the lobby the drop left
+        // standing. See pollNetwork for why the screen itself stays.
+        if ((screen_ == Screen::Login || screen_ == Screen::Lobby) && connectionLost()) {
+            drawDisconnectBanner(canvas);
+        }
     }
 
     // After every panel and the chat have painted, so the runs a selection is
@@ -935,13 +960,14 @@ void App::onReconnected() {
     // about a body that is not coming back.
     deathCardVisible_ = false;
     loginMessage_.clear();
-    screen_ = Screen::Login;
 
     // The account outlives the socket, so it is presented again rather than
-    // asked for. A token the new server refuses lands on the login form, which
-    // is the screen already showing.
+    // asked for -- and the lobby goes up on the strength of it, rather than
+    // the login form flashing for the round trip the resume takes. A token the
+    // new server refuses moves the screen on to the form (see pollNetwork).
     const std::string token =
         net_.sessionToken().empty() ? storedToken_ : net_.sessionToken();
+    screen_ = token.empty() ? Screen::Login : Screen::Lobby;
     if (!token.empty()) {
         net_.resumeSession(token);
         net_.addSystemMessage("Reconnected to the server.");

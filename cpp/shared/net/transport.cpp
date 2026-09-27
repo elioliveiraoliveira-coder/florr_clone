@@ -523,24 +523,27 @@ int Dialer::poll(TransportHandler& handler, int timeoutMillis) {
     (void)timeoutMillis;
 
     const web::State channel = web::state(connection_->fd());
-    if (channel == web::State::Closed) {
-        const std::string reason = web::error(connection_->fd());
-        fail(reason.empty() ? "connection closed" : reason, &handler);
-        return 0;
-    }
     if (state_ == State::Connecting) {
+        if (channel == web::State::Closed) {
+            const std::string reason = web::error(connection_->fd());
+            fail(reason.empty() ? "connection closed" : reason, &handler);
+            return 0;
+        }
         if (channel != web::State::Open) return 0;
         state_ = State::Connected;
         announced_ = true;
         handler.onConnect(*connection_);
     }
 
+    // Read BEFORE acting on a close, and before writing, which fails on a
+    // closed channel. A server with something to say on its way out -- why
+    // this session was replaced, why the handshake was refused -- sends it and
+    // hangs up in the same breath, and here the close is often already visible
+    // in the poll that first sees those bytes. The channel keeps them (the
+    // receive queue drains before it reports the end), so they are delivered
+    // first and readAvailable reports the close once they are gone. Checking
+    // the channel's state up front instead threw that last word away.
     std::string error;
-    if (!connection_->writeAvailable(error)) {
-        fail(error.empty() ? "write failed" : error, &handler);
-        return 0;
-    }
-
     int delivered = 0;
     const bool alive = connection_->readAvailable(error);
     while (connection_ && connection_->nextFrame(frameScratch_)) {
@@ -548,9 +551,16 @@ int Dialer::poll(TransportHandler& handler, int timeoutMillis) {
         handler.onMessage(*connection_, reader);
         ++delivered;
     }
+    // A handler may hang up from inside onMessage. That was its decision, and
+    // there is no close left to report on top of it.
+    if (!connection_) return delivered;
     if (!alive) {
         fail(error.empty() ? "disconnected" : error, &handler);
         return delivered;
+    }
+
+    if (!connection_->writeAvailable(error)) {
+        fail(error.empty() ? "write failed" : error, &handler);
     }
     return delivered;
 }

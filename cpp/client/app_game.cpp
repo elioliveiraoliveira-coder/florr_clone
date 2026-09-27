@@ -369,7 +369,19 @@ void App::drawDisconnectBanner(Canvas& canvas) {
     style.size = 16;
     style.align = Align::Centre;
     style.strokeWidth = 0;
-    text(canvas, "Disconnected from server. Reconnecting...", canvas.width() * 0.5, 19.0, style);
+    // Only promises the redial when there is one: a socket that was hung up
+    // on deliberately is not coming back by itself.
+    text(canvas,
+         net_.reconnecting() ? "Disconnected from server. Reconnecting..."
+                             : "Disconnected from server.",
+         canvas.width() * 0.5, 19.0, style);
+}
+
+bool App::connectionLost() const {
+    // Both halves of a redial: the wait between attempts reports Failed, an
+    // attempt in flight reports Connecting. Testing only the first blinked
+    // the banner out for the length of every try.
+    return net_.status() == NetClient::Status::Failed || net_.reconnecting();
 }
 
 } // namespace flix
