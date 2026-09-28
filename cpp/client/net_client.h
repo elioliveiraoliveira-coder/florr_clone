@@ -618,6 +618,9 @@ private:
     void handleRealmChange(ByteReader&);
     void handleMazeInfo(ByteReader&);
     void handleChat(ByteReader&);
+    /// The conversation already in progress when this account signed in, put
+    /// ABOVE whatever the transcript holds: it is older than all of it.
+    void handleChatHistory(ByteReader&);
     void handleNotice(ByteReader&);
     /// Appends one line and trims the transcript to its cap. A non-zero
     /// `speakerNetId` also raises a bubble over that flower.
@@ -680,6 +683,11 @@ private:
     std::string sessionToken_;
     std::vector<ChatLine> chat_;
     std::uint64_t chatSeq_ = 0;
+    /// Set once this account's backlog is in the transcript. Every
+    /// authentication sends it, reconnects included, and a client that stayed
+    /// up through the drop already holds every line of it; only forgetting the
+    /// account -- which empties the transcript -- makes room for another.
+    bool chatBackfilled_ = false;
     ChatBubbles chatBubbles_;
     DailyStreak dailyStreak_;
 

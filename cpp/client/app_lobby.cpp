@@ -246,6 +246,9 @@ void App::updateLobby(double dt) {
     } else if (!menus_.handleKeys(window_)) {
         if (window_.keyPressed(Key::Enter) || pressedChatBox()) chatOpen_ = true;
     }
+    // The transcript is on this screen too, and there is no zoom here for the
+    // wheel to go to instead.
+    scrollChat();
 
     // A release anywhere ends the press, including one a panel swallowed --
     // otherwise a button stays lit after a click that went somewhere else.
@@ -309,7 +312,14 @@ void App::updateLobby(double dt) {
             } else if (!onPicker && !hitInclusive(layout.ready, mouse)) {
                 nameField_.blur();
             }
-            chatOpen_ = hit(titleChatBox(window_.width(), window_.height()), mouse);
+            // A press on the slot opens the line and one elsewhere closes it
+            // -- except on the transcript above it, where selecting a message
+            // is done with the box open, as in the game.
+            if (hit(titleChatBox(window_.width(), window_.height()), mouse)) {
+                chatOpen_ = true;
+            } else if (!chatRegion_.contains(mouse)) {
+                chatOpen_ = false;
+            }
 
             if (hitInclusive(layout.ready, mouse)) startGame();
         }

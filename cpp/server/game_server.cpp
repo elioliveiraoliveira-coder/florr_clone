@@ -1119,6 +1119,7 @@ void GameServer::handleRegister(Session& session, net::Connection& connection, B
     sendProfile(session, connection);
     sendSkinCatalog(session, connection);
     sendGuildState(session, connection);
+    sendChatHistory(connection);
 }
 
 void GameServer::handleLogin(Session& session, net::Connection& connection, ByteReader& reader) {
@@ -1166,6 +1167,7 @@ void GameServer::handleLogin(Session& session, net::Connection& connection, Byte
     sendProfile(session, connection);
     sendSkinCatalog(session, connection);
     sendGuildState(session, connection);
+    sendChatHistory(connection);
 }
 
 void GameServer::handleResume(Session& session, net::Connection& connection, ByteReader& reader) {
@@ -1193,6 +1195,7 @@ void GameServer::handleResume(Session& session, net::Connection& connection, Byt
     sendProfile(session, connection);
     sendSkinCatalog(session, connection);
     sendGuildState(session, connection);
+    sendChatHistory(connection);
 }
 
 void GameServer::sendChangePasswordResult(net::Connection& connection, bool ok,
@@ -1538,6 +1541,26 @@ void GameServer::broadcastChat(net::ChatChannel channel, const std::string& auth
         const Session* session = sessionFor(connection.id());
         if (session && session->authenticated()) connection.send(w);
     });
+
+    chatHistory_.push_back({channel, author, text, database_.nowMillis()});
+    while (chatHistory_.size() > kChatHistoryLines) chatHistory_.pop_front();
+}
+
+void GameServer::sendChatHistory(net::Connection& connection) {
+    // Nothing said yet is nothing to send: the client's transcript is already
+    // empty.
+    if (chatHistory_.empty()) return;
+    static_assert(kChatHistoryLines <= 0xFF, "the line count is a u8");
+    ByteWriter w;
+    w.u8(static_cast<std::uint8_t>(net::ServerMessage::ChatHistory));
+    w.u8(static_cast<std::uint8_t>(chatHistory_.size()));
+    for (const ChatHistoryLine& line : chatHistory_) {
+        w.u8(static_cast<std::uint8_t>(line.channel));
+        w.str(line.author);
+        w.str(line.text);
+        w.f64(static_cast<double>(line.sentAtMillis));
+    }
+    connection.send(w);
 }
 
 void GameServer::handleJoin(Session& session, net::Connection& connection, ByteReader& reader) {

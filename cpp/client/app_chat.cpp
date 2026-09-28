@@ -558,8 +558,22 @@ Rect App::titleChatBox(int viewWidth, int viewHeight) {
 }
 
 void App::drawTitleChat(Canvas& canvas, double time) {
-    // Only the input slot: the title screen has no transcript above it.
-    drawChatField(canvas, titleChatBox(canvas.width(), canvas.height()), time);
+    // The whole box, transcript and all: the reference's title screen mounts
+    // the same Chat the game does, and it is where the answer to a command
+    // typed here lands -- as does everything said in the world while the
+    // player is picking a biome. Hidden by the same switches as in the game.
+    const MenuId open = menus_.open();
+    const bool panelHidesChat = open == MenuId::Inventory || open == MenuId::Crafting;
+    if (menus_.settings().showChat && !panelHidesChat) {
+        drawChat(canvas, time);
+        return;
+    }
+    // The slot stays either way, since Enter still opens it here. The region
+    // shrinks to just the slot, so the lobby does not keep a transcript that
+    // is no longer on screen as a place a press may land without closing it.
+    const Rect box = titleChatBox(canvas.width(), canvas.height());
+    chatRegion_ = box;
+    drawChatField(canvas, box, time);
 }
 
 bool App::handleClientCommand(const std::string& message) {

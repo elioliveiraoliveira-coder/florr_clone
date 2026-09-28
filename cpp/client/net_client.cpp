@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <iterator>
 
 #include "client/ui/markup.h"
 #include "client/web/reload.h"
@@ -109,6 +110,7 @@ const char* serverMessageName(std::uint8_t id) {
         case net::ServerMessage::ChangePasswordResult: return "changePasswordResult";
         case net::ServerMessage::OracleResult:        return "oracleResult";
         case net::ServerMessage::SessionReplaced:     return "sessionReplaced";
+        case net::ServerMessage::ChatHistory:         return "chatHistory";
     }
     return "unknown";
 }
@@ -273,6 +275,7 @@ void NetClient::forgetAccount() {
     sessionToken_.clear();
     profile_ = Profile{};
     chat_.clear();
+    chatBackfilled_ = false;
     dailyStreak_ = DailyStreak{};
     skinCatalog_.clear();
     equippedSkinId_.clear();
@@ -625,6 +628,7 @@ void NetClient::onMessage(net::Connection&, ByteReader& reader) {
         case net::ServerMessage::ChangePasswordResult: handleChangePasswordResult(reader); break;
         case net::ServerMessage::OracleResult:  handleOracleResult(reader); break;
         case net::ServerMessage::SessionReplaced: handleSessionReplaced(reader); break;
+        case net::ServerMessage::ChatHistory:   handleChatHistory(reader); break;
         default:
             // An unknown id means the server is newer than this build. The
             // frame is already fully buffered, so skipping it is safe and
@@ -1157,6 +1161,37 @@ void NetClient::handleChat(ByteReader& reader) {
     const std::uint32_t speakerNetId = reader.u32();
     if (!reader.ok()) return;
     pushChat(channel, std::move(author), std::move(text), speakerNetId);
+}
+
+void NetClient::handleChatHistory(ByteReader& reader) {
+    const std::uint8_t count = reader.u8();
+    std::vector<ChatLine> backlog;
+    backlog.reserve(count);
+    for (std::uint8_t i = 0; i < count; ++i) {
+        ChatLine line;
+        line.channel = static_cast<net::ChatChannel>(reader.u8());
+        line.author = reader.str();
+        line.text = reader.str();
+        // Stamped with when it was SAID. No bubble and no speaker: whoever
+        // said it may have left, and a net id from then may be somebody else
+        // now.
+        line.wallClockMillis = static_cast<std::int64_t>(reader.f64());
+        line.receivedAtMillis = nowMillis();
+        backlog.push_back(std::move(line));
+    }
+    if (!reader.ok()) return;
+    if (chatBackfilled_) return;
+    chatBackfilled_ = true;
+
+    // At the top, so chatSeq_ is left alone: it counts lines landing at the
+    // BOTTOM, which is what a reader scrolled back through the box is held
+    // still against, and nothing landed there.
+    chat_.insert(chat_.begin(), std::make_move_iterator(backlog.begin()),
+                 std::make_move_iterator(backlog.end()));
+    if (chat_.size() > kMaxChatLines) {
+        chat_.erase(chat_.begin(),
+                    chat_.begin() + static_cast<std::ptrdiff_t>(chat_.size() - kMaxChatLines));
+    }
 }
 
 void NetClient::handleNotice(ByteReader& reader) {

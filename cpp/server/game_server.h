@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -566,6 +567,10 @@ private:
     /// Notice -- whose author is always System -- cannot express.
     void sendChatTo(net::Connection&, net::ChatChannel, const std::string& author,
                     const std::string& text);
+    /// The backlog broadcastChat keeps, as one ChatHistory message. Sent once
+    /// per authentication, which is the moment broadcastChat starts including
+    /// this connection -- so the backlog and the live stream meet exactly.
+    void sendChatHistory(net::Connection&);
 
     /// The guild `username` belongs to, or an empty string. Searched rather
     /// than indexed: membership lives on the guild, not on the account, and a
@@ -1241,6 +1246,22 @@ private:
     std::uint32_t tick_ = 0;
     double nextPersistMillis_ = 0;
     ByteWriter scratch_;
+
+    /// One line broadcastChat sent, kept for sendChatHistory.
+    struct ChatHistoryLine {
+        net::ChatChannel channel = net::ChatChannel::Global;
+        std::string author;
+        std::string text;
+        std::int64_t sentAtMillis = 0;   ///< Unix time, Database::nowMillis
+    };
+    /// The last lines said to everyone, oldest first. Only broadcastChat
+    /// feeds it: a squad or guild line, or a reply to one player's command,
+    /// was never everybody's to replay. Memory only -- a restart starts the
+    /// room over, as it does for the players in it.
+    std::deque<ChatHistoryLine> chatHistory_;
+    /// The client's own transcript cap (NetClient::kMaxChatLines): a longer
+    /// backlog would be sent only to be trimmed off on arrival.
+    static constexpr std::size_t kChatHistoryLines = 100;
 };
 
 } // namespace flix

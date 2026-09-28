@@ -394,6 +394,51 @@ TEST(chat_reaches_the_other_player) {
     CHECK(found);
 }
 
+TEST(a_new_session_opens_on_the_conversation_already_in_progress) {
+    // A client that has just loaded sits on the title screen with an empty
+    // transcript unless the server hands it what was said before it arrived.
+    Harness h("chat-backlog", {}, flix::testsupport::dataDir(), 0);
+    if (!h.ready) { CHECK(false); return; }
+
+    NetClient alice;
+    CHECK(connectClient(h, alice));
+    alice.requestRegister("alice", "password1");
+    CHECK(h.stepUntil({&alice}, [&] { return alice.status() == NetClient::Status::LoggedIn; }));
+    alice.sendChat("said before carol came");
+    CHECK(h.stepUntil({&alice}, [&] { return !alice.chat().empty(); }));
+
+    NetClient carol;
+    CHECK(connectClient(h, carol));
+    carol.requestRegister("carol", "password3");
+    CHECK(h.stepUntil({&alice, &carol}, [&] { return !carol.chat().empty(); }));
+    alice.sendChat("said after");
+    CHECK(h.stepUntil({&alice, &carol}, [&] { return carol.chat().size() >= 2; }));
+
+    // Once each, backlog first: the replay and the live stream meet exactly.
+    const auto count = [&](const std::string& text) {
+        return std::count_if(carol.chat().begin(), carol.chat().end(),
+                             [&](const ChatLine& line) { return line.text == text; });
+    };
+    CHECK_EQ(count("said before carol came"), 1);
+    CHECK_EQ(count("said after"), 1);
+    if (carol.chat().size() >= 2) {
+        CHECK_EQ(carol.chat()[0].text, std::string("said before carol came"));
+        CHECK_EQ(carol.chat()[0].author, std::string("alice"));
+        CHECK_EQ(carol.chat()[0].speakerNetId, std::uint32_t{0});
+        CHECK(carol.chat()[0].wallClockMillis > 0);
+        CHECK_EQ(carol.chat()[1].text, std::string("said after"));
+    }
+
+    // Signing in again -- what a reconnect does -- is sent the backlog again,
+    // and a client that already holds it must not print it twice.
+    carol.authAnswered = false;
+    carol.resumeSession(carol.sessionToken());
+    CHECK(h.stepUntil({&alice, &carol}, [&] { return carol.authAnswered; }));
+    h.step(5, {&alice, &carol});
+    CHECK_EQ(count("said before carol came"), 1);
+    CHECK_EQ(count("said after"), 1);
+}
+
 TEST(a_spoken_line_is_anchored_to_the_speakers_body) {
     // The whole point of the speaker id on the wire: a listener has to be able
     // to find the flower that said it in their OWN view, which means the id is

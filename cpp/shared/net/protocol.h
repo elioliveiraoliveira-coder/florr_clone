@@ -22,7 +22,7 @@ namespace flix::net {
 using ConnectionId = std::uint32_t;
 
 /// Bumped whenever any message layout in this file changes.
-inline constexpr std::uint16_t kProtocolVersion = 39;
+inline constexpr std::uint16_t kProtocolVersion = 40;
 
 /// "Not one of the rotating store's cards": a purchase at the full ladder
 /// price. Any other value is a slot index the server checks against the offers
@@ -248,6 +248,17 @@ enum class ServerMessage : std::uint8_t {
                         ///< refusal, and must NOT redial on its own, or the
                         ///< two tabs would take the account back from each
                         ///< other forever. (Version 36.)
+    ChatHistory,        ///< u8 count, { u8 channel, str author, str text,
+                        ///< f64 sentAtMillis }*, oldest first. The last lines
+                        ///< the server broadcast, sent once per authentication
+                        ///< in the same breath that starts the live Chat
+                        ///< stream to this session -- so a client that has
+                        ///< just loaded opens on the conversation already in
+                        ///< progress, with no gap and no line twice.
+                        ///< `sentAtMillis` is Unix time on the server's clock:
+                        ///< a replayed line is stamped with when it was said,
+                        ///< not when it arrived. No speaker: a backlog is
+                        ///< never floated as a bubble. (Version 40.)
 };
 
 // ---------------------------------------------------------------------------
