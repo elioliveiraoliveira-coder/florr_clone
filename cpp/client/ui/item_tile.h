@@ -121,8 +121,8 @@ struct ItemTile {
     std::uint32_t emptyBorder = 0x9A8B70u;
 
     /// gardn always names the petal inside the plate. Off for the surfaces
-    /// that caption a tile themselves -- the shop's price bar, the gallery's
-    /// drop chance, a tile riding the cursor.
+    /// that caption a tile themselves -- the shop's price bar, a tile riding
+    /// the cursor.
     bool showName = true;
     /// Empty takes the petal's own name.
     std::string nameOverride;

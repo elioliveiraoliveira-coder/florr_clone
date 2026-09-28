@@ -98,7 +98,9 @@ constexpr double kCardWidth = kGridWidth + kPad * 2.0 + kScrollbarWidth + 4.0 + 
 constexpr double kDropsGapY = 6.0;
 constexpr double kDropsHeaderH = 20.0;
 constexpr double kColHeaderH = 16.0;
-constexpr double kCardSize = 32.0;
+/// gardn's GalleryPetal size. Any smaller and the petal's name inside the
+/// card shrinks to a smear.
+constexpr double kCardSize = 45.0;
 constexpr double kCardLabelH = 14.0;
 constexpr double kDropCellW = 56.0;
 constexpr double kDropRowH = kCardSize + 4.0 + kCardLabelH;
@@ -507,12 +509,13 @@ void drawDropCard(Canvas& canvas, const SpriteCache& sprites, double cellX, doub
 
     // Consumables draw as a bare coloured plate: only petals are compiled as
     // sprites, so a potion has no artwork to put on one.
+    //
+    // Named, as gardn names every drop in its gallery: the tile lifts its
+    // icon to make room for the name whether or not one is drawn, so a
+    // nameless card reads as one with its label missing.
     ItemTile tile;
     tile.petalIndex = cell.drop->petalIndex;
     tile.rarity = rarity;
-    // The chance printed under the card is this card's caption; a name inside
-    // it as well would give a 34px square two labels.
-    tile.showName = false;
     if (cell.drop->maxQuantity > 1) tile.badge = "x" + std::to_string(cell.drop->maxQuantity);
     tile.timeSeconds = timeSeconds;
     drawItemTile(canvas, sprites, {cardX, rowY, kCardSize, kCardSize}, tile);
