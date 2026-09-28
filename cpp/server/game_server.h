@@ -73,9 +73,6 @@ struct ServerConfig {
     std::string dataDir = "data";
     std::string databasePath = "inventory.json";
     std::uint64_t worldSeed = 0x5EED10;
-    /// Refuses connections past this; the tick cost is linear in players and
-    /// the snapshot cost is worse, so this is a real limit, not a formality.
-    std::size_t maxPlayers = 64;
     /// TLS material, used only by the emscripten build. With it the listener
     /// serves https and offers WebTransport alongside WebSocket; without it,
     /// plain http and WebSocket only -- WebTransport is secure-context only

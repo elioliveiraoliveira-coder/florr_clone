@@ -1607,11 +1607,6 @@ void GameServer::handleJoin(Session& session, net::Connection& connection, ByteR
         }
     }
 
-    if (playerCount() >= config_.maxPlayers) {
-        sendNotice(connection, net::NoticeSeverity::Bad, "The server is full.");
-        return;
-    }
-
     const Entity entity = spawnPlayer(session);
     if (entity == NULL_ENTITY) {
         sendNotice(connection, net::NoticeSeverity::Bad, "Could not find a spawn point.");

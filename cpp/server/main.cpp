@@ -52,7 +52,6 @@ void usage(const char* program) {
         "  --data <dir>       directory holding mobs.json and petals.json (default data)\n"
         "  --db <path>        account database (default inventory.json)\n"
         "  --seed <number>    simulation random seed\n"
-        "  --max-players <n>  connection limit\n"
 #ifdef __EMSCRIPTEN__
         "  --cert <path>      TLS certificate. Without it, cert.crt then\n"
         "                     dev-cert.crt are looked for in the working\n"
@@ -137,7 +136,6 @@ int main(int argc, char** argv) {
         else if (arg == "--data") config.dataDir = next("--data");
         else if (arg == "--db") config.databasePath = next("--db");
         else if (arg == "--seed") config.worldSeed = std::strtoull(next("--seed"), nullptr, 10);
-        else if (arg == "--max-players") config.maxPlayers = static_cast<std::size_t>(std::atoi(next("--max-players")));
         else if (arg == "--cert") config.certPath = next("--cert");
         else if (arg == "--key") config.keyPath = next("--key");
         else if (arg == "--web-root") config.webRoot = next("--web-root");
