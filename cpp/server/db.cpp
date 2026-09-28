@@ -8,6 +8,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <utility>
 
 #include "shared/game/constants.h"
 
@@ -402,7 +403,9 @@ void Database::reset() {
     usersByLowerName_.clear();
     usersById_.clear();
     otherTop_ = Json::object();
+    otherTopText_.clear();
     topKeyOrder_.clear();
+    lastSaveBytes_ = 0;
     path_.clear();
     loadFailed_ = false;
     dirty_ = false;
@@ -439,6 +442,10 @@ bool Database::load(const std::string& path, std::string& errorOut) {
         return false;
     }
     pruneExpiredSessions();
+    // Every row is uncached straight off the parse. Paying for that here, at
+    // boot, is what keeps the FIRST save -- thirty seconds in, with the
+    // players who reconnected after a restart already on -- off the tick.
+    lastSaveBytes_ = serialise().size();
     return true;
 }
 
@@ -483,6 +490,7 @@ bool Database::parseRoot(const Json& root, std::string& errorOut) {
 }
 
 Json& Database::rawArrayTable(const std::string& key) {
+    otherTopText_.erase(key);
     Json& table = otherTop_[key];
     if (!table.isArray()) table = Json::array();
     if (std::find(topKeyOrder_.begin(), topKeyOrder_.end(), key) == topKeyOrder_.end()) {
@@ -492,6 +500,7 @@ Json& Database::rawArrayTable(const std::string& key) {
 }
 
 Json& Database::rawTable(const std::string& key) {
+    otherTopText_.erase(key);
     Json& table = otherTop_[key];
     if (!table.isObject()) table = Json::object();
     if (std::find(topKeyOrder_.begin(), topKeyOrder_.end(), key) == topKeyOrder_.end()) {
@@ -532,13 +541,64 @@ Json Database::toJson() const {
     return root;
 }
 
+std::string Database::serialise() const {
+    // toJson()'s layout, written straight out. Building that tree copied every
+    // inventory in the file twice before dump() walked it a third time, all on
+    // the tick; here an untouched row is one append of text it already had.
+    std::string out;
+    out.reserve(lastSaveBytes_ + lastSaveBytes_ / 16);
+    bool firstKey = true;
+    const auto key = [&](const std::string& name) {
+        out += firstKey ? '{' : ',';
+        firstKey = false;
+        out += jsonEscape(name);
+        out += ':';
+    };
+    const auto table = [&](const auto& rows, const auto& toJson) {
+        if (rows.size() == 0) { out += "{}"; return; }
+        char separator = '{';
+        for (const std::string& rowKey : rows.keys()) {
+            out += separator;
+            separator = ',';
+            out += jsonEscape(rowKey);
+            out += ':';
+            out += rows.text(rowKey, toJson);
+        }
+        out += '}';
+    };
+    const auto players = [&] { key("players"); table(players_, playerToJson); };
+    const auto users = [&] { key("users"); table(users_, accountToJson); };
+    const auto sessions = [&] { key("sessions"); table(sessions_, sessionToJson); };
+
+    bool wrotePlayers = false, wroteUsers = false, wroteSessions = false;
+    for (const std::string& name : topKeyOrder_) {
+        if (name == "players") { players(); wrotePlayers = true; }
+        else if (name == "users") { users(); wroteUsers = true; }
+        else if (name == "sessions") { sessions(); wroteSessions = true; }
+        else {
+            auto it = otherTopText_.find(name);
+            if (it == otherTopText_.end()) {
+                it = otherTopText_.emplace(name, otherTop_[name].dump(0)).first;
+            }
+            key(name);
+            out += it->second;
+        }
+    }
+    if (!wrotePlayers) players();
+    if (!wroteUsers) users();
+    if (!wroteSessions && sessions_.size() > 0) sessions();
+    out += '}';
+    return out;
+}
+
 bool Database::save() {
     // The whole point of the flag. The in-memory database is the empty
     // default when a load fails, and writing that out turns a file an operator
     // can still repair into total, permanent account loss.
     if (loadFailed_ || path_.empty()) return false;
 
-    const std::string text = toJson().dump(0);
+    const std::string text = serialise();
+    lastSaveBytes_ = text.size();
     const std::string tmp = path_ + ".tmp";
 
     std::FILE* file = std::fopen(tmp.c_str(), "wb");
@@ -814,6 +874,7 @@ std::string Database::accountAddressHash(const std::string& addressKey) {
     if (salt.empty()) {
         salt = crypto::secureRandom().hex(16);
         otherTop_["ipSalt"] = Json(salt);
+        otherTopText_.erase("ipSalt");
         if (std::find(topKeyOrder_.begin(), topKeyOrder_.end(), "ipSalt") == topKeyOrder_.end()) {
             topKeyOrder_.push_back("ipSalt");
         }
@@ -897,7 +958,7 @@ bool Database::eraseUser(const std::string& username) {
     // step over.
     std::vector<std::string> doomedTokens;
     for (const std::string& tokenHash : sessions_.keys()) {
-        const Session* session = sessions_.find(tokenHash);
+        const Session* session = std::as_const(sessions_).find(tokenHash);
         if (session != nullptr && session->userId == userId) doomedTokens.push_back(tokenHash);
     }
     for (const std::string& tokenHash : doomedTokens) sessions_.erase(tokenHash);
@@ -1044,7 +1105,7 @@ void Database::revokeSession(const std::string& token) {
 int Database::revokeSessionsForUser(const std::string& username) {
     std::vector<std::string> doomed;
     for (const std::string& tokenHash : sessions_.keys()) {
-        const Session* session = sessions_.find(tokenHash);
+        const Session* session = std::as_const(sessions_).find(tokenHash);
         if (session && session->username == username) doomed.push_back(tokenHash);
     }
     for (const std::string& tokenHash : doomed) sessions_.erase(tokenHash);
@@ -1056,7 +1117,7 @@ int Database::pruneExpiredSessions() {
     const std::int64_t now = nowMillis();
     std::vector<std::string> doomed;
     for (const std::string& tokenHash : sessions_.keys()) {
-        const Session* session = sessions_.find(tokenHash);
+        const Session* session = std::as_const(sessions_).find(tokenHash);
         if (session && session->expiresAtMillis <= now) doomed.push_back(tokenHash);
     }
     for (const std::string& tokenHash : doomed) sessions_.erase(tokenHash);

@@ -60,6 +60,10 @@ constexpr double kMaxDeltaSeconds = net::kTickSeconds * 3.0;
 /// Low-pass factor on the step, ~a ten-tick time constant.
 constexpr double kDeltaSmoothing = 0.1;
 
+/// A tick this long gets its phase split logged. Three nominal ticks: a
+/// healthy tick is a few milliseconds, and one this long is a visible hitch.
+constexpr double kSlowTickLogMillis = net::kTickMillis * 3.0;
+
 /// The batch a craft consumes.
 constexpr int kCraftBatch = 5;
 
@@ -492,6 +496,10 @@ bool GameServer::step() {
         debugTickAccumMillis_ += tookMillis;
         if (tookMillis > debugTickMaxMillis_) debugTickMaxMillis_ = tookMillis;
         ++debugTickSamples_;
+        if (tookMillis >= kSlowTickLogMillis && tookMillis > slowTickWorstMillis_) {
+            slowTickWorstMillis_ = tookMillis;
+            slowTickLine_ = describeTickPhases(tookMillis);
+        }
 
         nextTickMillis_ += net::kTickMillis;
         // A timer never queues up the fires it missed: a tick that overran
@@ -504,6 +512,12 @@ bool GameServer::step() {
         if (tickNow >= nextDebugStatsMillis_) {
             broadcastDebugStats();
             nextDebugStatsMillis_ = tickNow + 1000.0;
+            if (!slowTickLine_.empty()) {
+                std::printf("%s\n", slowTickLine_.c_str());
+                std::fflush(stdout);
+                slowTickLine_.clear();
+            }
+            slowTickWorstMillis_ = 0;
         }
     }
 
@@ -526,9 +540,38 @@ std::size_t GameServer::playerCount() const {
 // Tick
 // ---------------------------------------------------------------------------
 
+void GameServer::markTickPhase(const char* name) {
+    if (tickPhaseCount_ < tickPhases_.size()) {
+        tickPhases_[tickPhaseCount_++] = TickPhase{name, monotonicMillis()};
+    }
+}
+
+std::string GameServer::describeTickPhases(double tookMillis) const {
+    char buffer[64];
+    std::snprintf(buffer, sizeof buffer, "[tick] slow tick %.1f ms:", tookMillis);
+    std::string line = buffer;
+    double from = tickStartedMillis_;
+    bool any = false;
+    for (std::size_t i = 0; i < tickPhaseCount_; ++i) {
+        const double took = tickPhases_[i].endedMillis - from;
+        from = tickPhases_[i].endedMillis;
+        // The phases that cost nothing are most of them, and listing them
+        // buries the one that did.
+        if (took < 1.0) continue;
+        std::snprintf(buffer, sizeof buffer, "%s %s %.1f", any ? "," : "", tickPhases_[i].name,
+                      took);
+        line += buffer;
+        any = true;
+    }
+    if (!any) line += " no phase over 1 ms";
+    return line;
+}
+
 void GameServer::tick(double nowMillis) {
     ++tick_;
     clockMillis_ = nowMillis;
+    tickPhaseCount_ = 0;
+    tickStartedMillis_ = monotonicMillis();
 
     for (auto& entry : sessions_) refillAllowances(entry.second, nowMillis);
 
@@ -546,6 +589,7 @@ void GameServer::tick(double nowMillis) {
     // schedule.
     serviceAutoUpdate();
     serviceScheduledRestart(nowMillis);
+    markTickPhase("sessions");
 
     // Housekeeping, ABOVE the idle gate: an account registered by somebody
     // sitting on the title screen is dirty in memory and would otherwise wait
@@ -558,12 +602,14 @@ void GameServer::tick(double nowMillis) {
         database_.pruneExpiredSessions();
         database_.save();
     }
+    markTickPhase("persist");
 
     // Bot population is maintained on every tick, INCLUDING the idle ones the
     // gate below returns out of -- that is where the reference calls it, and
     // it is what lets an empty server retire its bots after the grace period
     // rather than leaving them simulating for nobody.
     maintainBots(nowMillis);
+    markTickPhase("bot population");
 
     // Nobody in the world means nothing to simulate. The reference returns out
     // of its tick here and the whole world freezes: mobs stop wandering, nests
@@ -599,9 +645,11 @@ void GameServer::tick(double nowMillis) {
     // flower they are no longer steering. It is also where the split follows
     // the loadout: equipping the petal splits, taking it off merges.
     serviceSplitters(nowMillis);
+    markTickPhase("splitters");
 
     reapDead(nowMillis);
     commands_.flush();
+    markTickPhase("reap");
 
     // The wire runs slower than the simulation and on its own clock: physics
     // and combat want 30 Hz, clients do not, and the per-recipient encode/cull/
@@ -615,6 +663,7 @@ void GameServer::tick(double nowMillis) {
         nextSnapshotMillis_ += net::kSnapshotMillis;
         if (nextSnapshotMillis_ < nowMillis) nextSnapshotMillis_ = nowMillis + net::kSnapshotMillis;
         replicate(nowMillis);
+        markTickPhase("replicate");
         // One-shot events ride inside the snapshot here, where the reference
         // has its own per-tick outbox, so they are BANKED across the ticks that
         // send nothing rather than dropped: a hit that landed on a simulation
@@ -622,6 +671,7 @@ void GameServer::tick(double nowMillis) {
         events_.clear();
     }
     listener_.flush();
+    markTickPhase("send");
 }
 
 void GameServer::runSystems(double nowMillis, double dt) {
@@ -640,6 +690,7 @@ void GameServer::runSystems(double nowMillis, double dt) {
     // input: their decisions are made against the world as this tick found it
     // and are consumed by the very next stage, not one tick later.
     stepBots(nowMillis);
+    markTickPhase("bot ai");
 
     // Modifiers before movement, as the reference schedules them (its
     // playerModifiers system sits in Phase.Input, ahead of playerMovement).
@@ -648,7 +699,9 @@ void GameServer::runSystems(double nowMillis, double dt) {
     petals_->foldModifiers(world_, content());
 
     movement_->runPlayerPhase(world_, *terrain_, nowMillis, dt);
+    markTickPhase("players");
     petals_->run(world_, content(), nowMillis, dt, commands_, terrain_.get(), &events_);
+    markTickPhase("petals");
 
     // Mob targeting must see the flowers' newly committed positions. Refresh
     // both the LOD list and broadphase after player movement instead of asking
@@ -687,15 +740,19 @@ void GameServer::runSystems(double nowMillis, double dt) {
     afterPlayers.each([&](Entity e, Transform& transform, Body& body) {
         grid_.insert(e, transform.realm, transform.position, body.radius);
     });
+    markTickPhase("broadphase");
 
     // The reference server resolves flower bodies and the petal ring inside
     // the player pipeline, before moveEnemies(). Keep that temporal boundary:
     // a mob cannot escape a petal it was already touching by moving first.
     combat_->beginTick(world_, nowMillis, dt, events_);
     combat_->runContactPhase(world_, grid_, content(), nowMillis);
+    markTickPhase("contact");
 
     mobAi_->run(world_, *terrain_, grid_, activePlayers_, nowMillis, net::kTickSeconds, commands_);
+    markTickPhase("mob ai");
     movement_->runWorldPhase(world_, *terrain_, nowMillis, net::kTickSeconds);
+    markTickPhase("mob movement");
     // AFTER the mobs have moved, for the reason a flower's ring is placed
     // after its own movement: a seat is a rigid offset from the body, and a
     // ring carried before the body moves trails it by a tick.
@@ -710,15 +767,20 @@ void GameServer::runSystems(double nowMillis, double dt) {
     afterMovement.each([&](Entity e, Transform& transform, Body& body) {
         grid_.insert(e, transform.realm, transform.position, body.radius);
     });
+    markTickPhase("regrid");
     combat_->runWorldPhase(world_, grid_, content(), nowMillis, dt);
+    markTickPhase("combat");
     spawning_->run(world_, *terrain_, content(), activePlayers_, rng_, nowMillis,
                    net::kTickSeconds, commands_);
+    markTickPhase("spawning");
     // The arena and the maze are filled whole rather than by viewport, and only
     // while someone is in them.
     modes_->run(world_, *terrain_, content(), *spawning_, grid_, humanPlayers_, rng_, nowMillis);
     // Every flower, bots included, is somebody an NPC can turn to look at.
     npcs_->run(world_, *terrain_, content(), activePlayers_, nowMillis);
+    markTickPhase("modes+npcs");
     loot_->run(world_, grid_, content(), rng_, nowMillis, dt, commands_, events_);
+    markTickPhase("loot");
 
     // A pickup is a world event; owning it is an account fact. The loot system
     // deliberately knows nothing about the database, so the hand-off is here.
@@ -730,6 +792,7 @@ void GameServer::runSystems(double nowMillis, double dt) {
     // The spawner has no view of the socket list, so it queues the bosses it
     // admitted rather than announcing them.
     announceBossSpawns();
+    markTickPhase("banking");
 }
 
 void GameServer::announceBossSpawns() {

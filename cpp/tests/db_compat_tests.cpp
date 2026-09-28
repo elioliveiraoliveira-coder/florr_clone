@@ -389,3 +389,66 @@ TEST(a_stack_stops_at_the_cap_instead_of_wrapping) {
     record.inventory["rare"]["petal_rose"] = Json("lots");
     CHECK_EQ(record.itemCount(Rarity::Rare, "petal_rose"), 0);
 }
+
+TEST(a_save_rewrites_every_row_changed_since_the_last_one) {
+    // A save assembles the file from each row's cached text and re-serialises
+    // only rows handed out mutably since. After every kind of edit that text
+    // must still be exactly what rebuilding the whole tree gives: a row whose
+    // cache outlived an edit is an edit the file never receives.
+    const std::string path = scratchPath("rowcache");
+    writeFile(path, kLegacyDatabase);
+
+    Database db;
+    std::string error;
+    CHECK(db.load(path, error));
+    db.setPasswordCost(crypto::kBcryptMinCost);
+
+    const auto matchesRebuild = [&](const char* edit) {
+        const bool same = db.serialise() == db.toJson().dump(0);
+        if (!same) ::testing::reportFailure(__FILE__, __LINE__, std::string("stale after ") + edit);
+    };
+    matchesRebuild("the load");
+
+    db.progress("u-alpha").addItem(Rarity::Rare, "stinger", 3);
+    matchesRebuild("an inventory change");
+    db.progress("u-alpha").totalXp += 10;
+    matchesRebuild("an XP change");
+    db.findUser("BETA")->admin = true;
+    matchesRebuild("an account found by another spelling");
+    db.findUserById("u-alpha")->muted = true;
+    matchesRebuild("an account found by id");
+
+    const std::string token = db.createSession("u-alpha", "alpha");
+    matchesRebuild("a new session");
+    CHECK(db.resolveSession(token) != nullptr);
+    matchesRebuild("a resume, which stamps lastActiveAt");
+    db.revokeSession(token);
+    matchesRebuild("a revoked session");
+
+    db.rawTable("codes")["WELCOME"].set("uses", Json(4));
+    matchesRebuild("a raw table edit");
+    db.rawArrayTable("notifications").push(Json::object());
+    matchesRebuild("a raw array edit");
+    db.rawTable("brandNewTable")["k"] = Json(1);
+    matchesRebuild("a new raw table");
+    CHECK(!db.accountAddressHash("203.0.113.9").empty());
+    matchesRebuild("a newly minted address salt");
+
+    CHECK(db.createUser("gamma", "a-good-password").ok());
+    matchesRebuild("a new account");
+    CHECK(db.eraseUser("beta"));
+    matchesRebuild("an erased account");
+
+    // And through the file, not only the string.
+    CHECK(db.save());
+    Database reloaded;
+    CHECK(reloaded.load(path, error));
+    CHECK_EQ(reloaded.progress("u-alpha").itemCount(Rarity::Rare, "stinger"), 5);
+    CHECK(reloaded.findUser("alpha") != nullptr && reloaded.findUser("alpha")->muted);
+    CHECK(reloaded.findUser("beta") == nullptr);
+    CHECK(reloaded.findUser("gamma") != nullptr);
+    CHECK_EQ(reloaded.storedTable("codes")["WELCOME"]["uses"].asInt(), 4);
+    CHECK_EQ(reloaded.storedTable("notifications").size(), std::size_t(2));
+
+    std::remove(path.c_str());
+}

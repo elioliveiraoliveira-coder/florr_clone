@@ -1222,6 +1222,24 @@ private:
     int debugTickSamples_ = 0;
     double nextDebugStatsMillis_ = 0;
 
+    /// Where the current tick's time went: tick() stamps the end of each of
+    /// its phases here. A tick past kSlowTickLogMillis turns the stamps into
+    /// one log line naming the phases that cost something, so a spike on a
+    /// live server says what it was without a profiler attached. Only the
+    /// worst slow tick of each second is printed -- an overloaded server
+    /// would otherwise write thirty lines a second to a small disk.
+    struct TickPhase {
+        const char* name;
+        double endedMillis;
+    };
+    void markTickPhase(const char* name);
+    std::string describeTickPhases(double tookMillis) const;
+    std::array<TickPhase, 24> tickPhases_{};
+    std::size_t tickPhaseCount_ = 0;
+    double tickStartedMillis_ = 0;
+    double slowTickWorstMillis_ = 0;
+    std::string slowTickLine_;
+
     /// When the next snapshot is due. The wire runs slower than the
     /// simulation: physics wants 30 Hz resolution, clients do not, and the
     /// per-recipient encode/cull/delta pass is the most expensive thing in the

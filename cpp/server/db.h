@@ -225,24 +225,48 @@ public:
     /// unordered_map would reshuffle every key on the first save and make the
     /// diff between two backups useless. Order lives in a side vector, so
     /// lookup stays O(1) and only the rare erase pays for it.
+    ///
+    /// Each row also keeps the compact JSON it was last written as. The two
+    /// MUTABLE accessors, find() and insert(), are the only ways to change a
+    /// row and both drop that text, so a save re-serialises only the rows
+    /// somebody could have touched since the last one -- a handful of online
+    /// players rather than every account ever made. Serialising all of them
+    /// was a 300 ms tick on prod every thirty seconds. The rule this rests on:
+    /// nobody holds a mutable pointer ACROSS a save. Every caller takes one,
+    /// changes the row and lets it go; a loop that only reads should go
+    /// through std::as_const so it does not invalidate what it looks at.
     template <class T>
     class Table {
     public:
         T* find(const std::string& key) {
             auto it = byKey_.find(key);
-            return it == byKey_.end() ? nullptr : &it->second;
+            if (it == byKey_.end()) return nullptr;
+            it->second.cached = false;
+            return &it->second.value;
         }
         const T* find(const std::string& key) const {
             auto it = byKey_.find(key);
-            return it == byKey_.end() ? nullptr : &it->second;
+            return it == byKey_.end() ? nullptr : &it->second.value;
         }
         T& insert(const std::string& key) {
             auto it = byKey_.find(key);
             if (it == byKey_.end()) {
                 order_.push_back(key);
-                it = byKey_.emplace(key, T{}).first;
+                it = byKey_.try_emplace(key).first;
             }
-            return it->second;
+            it->second.cached = false;
+            return it->second.value;
+        }
+        /// The row as compact JSON, re-serialised with `toJson` only when it
+        /// was handed out mutably since the last call. `key` must exist.
+        template <class ToJson>
+        const std::string& text(const std::string& key, const ToJson& toJson) const {
+            const Row& row = byKey_.find(key)->second;
+            if (!row.cached) {
+                row.text = toJson(row.value).dump(0);
+                row.cached = true;
+            }
+            return row.text;
         }
         bool erase(const std::string& key) {
             if (byKey_.erase(key) == 0) return false;
@@ -256,8 +280,13 @@ public:
         void clear() { order_.clear(); byKey_.clear(); }
 
     private:
+        struct Row {
+            T value{};
+            mutable std::string text;
+            mutable bool cached = false;
+        };
         std::vector<std::string> order_;
-        std::unordered_map<std::string, T> byKey_;
+        std::unordered_map<std::string, Row> byKey_;
     };
 
     /// Wall-clock source, in Unix milliseconds. Overridable so a test can age
@@ -425,6 +454,10 @@ public:
     /// Exposed because it is exactly what a backup wants.
     Json toJson() const;
 
+    /// What save() writes: byte for byte toJson().dump(0), but assembled from
+    /// each row's cached text (see Table) instead of rebuilt as a tree.
+    std::string serialise() const;
+
     // -- backups -----------------------------------------------------------
     //
     // Timestamped snapshots kept ONE LEVEL ABOVE the runtime directory, in
@@ -499,9 +532,14 @@ private:
     /// Top-level keys we do not model -- codes, notifications, guilds,
     /// apiKeys, customSkins -- held as raw JSON and written back untouched.
     Json otherTop_ = Json::object();
+    /// Each of those tables as last serialised, on Table's terms: whatever
+    /// hands one out mutably (rawTable, rawArrayTable, the salt) drops it.
+    mutable std::unordered_map<std::string, std::string> otherTopText_;
     /// Original top-level key order, so a save does not move `players` to the
     /// front of a file that had it elsewhere.
     std::vector<std::string> topKeyOrder_;
+    /// The last save's size, to reserve the next one's buffer in one go.
+    std::size_t lastSaveBytes_ = 0;
 
     std::string path_;
     bool loadFailed_ = false;
